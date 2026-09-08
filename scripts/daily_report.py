@@ -64,7 +64,7 @@ SMTP_PASSWORD = os.environ.get(
 
 # Recipients (comma-separated in a single string)
 REPORT_RECIPIENTS = os.environ.get(
-    "REPORT_RECIPIENTS", "chip.brandner@gmail.com, ksilesky1@verizon.net"
+    "REPORT_RECIPIENTS", "eric@polytechres.com, ksilesky1@verizon.net, krogers.pri@gmail.com"
 )
 
 # Report settings

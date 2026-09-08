@@ -33,7 +33,7 @@ else {
 }
 
 # Prompt for recipients
-$DefaultRecipients = "chip.brandner@gmail.com, ksilesky1@verizon.net"
+$DefaultRecipients = "eric@polytechres.com, ksilesky1@verizon.net, krogers.pri@gmail.com"
 Write-Host ""
 $UserRecipients = Read-Host "Enter recipients (comma-separated) or press Enter for default [$DefaultRecipients]"
 
