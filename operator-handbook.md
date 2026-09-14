@@ -11,13 +11,12 @@ The scanner records the barcode, operator, station, part number, serial number, 
 ## Step-by-Step Instructions
 
 1. Open the scanning app.
-2. Wait for the operator and station lists to finish loading.
-3. Select your name in the Operator field.
-4. Select the correct Station.
-5. Make sure the scan box is active.
-6. Clean the barcode if the label is dirty or marked.
-7. Scan the full barcode in one pass.
-8. Read the result message before scanning the next item.
+2. Wait until the scan box says Ready to scan.
+3. If your name and station are already locked from last time, keep scanning.
+4. If they are not locked, select your name and the correct Station.
+5. Clean the barcode if the label is dirty or marked.
+6. Scan the full barcode in one pass.
+7. Read the result message before scanning the next item.
 
 ## Scan Results
 
@@ -74,7 +73,7 @@ If pending scans are above zero, leave the app open until the count returns to z
 | Pending count is above zero | Keep the app open. Check Wi-Fi. Wait 30 to 60 seconds after the badges turn green. |
 | Pending count stays stuck | Leave the app open and notify a supervisor. If both badges are green, the supervisor may ask you to reload once. |
 | Every scan says error | Confirm your operator and station are selected. Clean the label. If one product type keeps failing, set those items aside. |
-| Operator name is missing | Wait for the list to finish loading. If it never appears, check Wi-Fi and ask a supervisor. |
+| Operator name is missing | If operator/station are already locked, keep scanning. If lists never fill after a minute, call a supervisor. Do not clear site data. |
 | Scan box is locked | Wait for the timeout message or for the box to unlock. If it stays locked for more than 35 seconds, ask a supervisor. |
 | Duplicate looks wrong | Check the recent scan list for the same serial. Set the item aside if it is not clear. |
 

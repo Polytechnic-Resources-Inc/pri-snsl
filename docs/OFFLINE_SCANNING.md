@@ -6,6 +6,8 @@ The scanner is offline-first for accepted scans: it writes each accepted scan to
 
 Current scanner version: `v8.8.5`.
 
+Startup no longer waits on a live database call to unlock the scan box. Health checks use an 8 second GET against the operators table. Operator, station, and part map lists are cached on the tablet; the scan box enables first, then live config refreshes in the background.
+
 ## Purpose
 
 This document gives a technical summary of offline scanning. The source-of-truth behavior is split across:
