@@ -974,48 +974,39 @@ function initClock() {
  */
 async function fetchConfig() {
     console.log('🔄 Fetching config from Supabase...');
-
     try {
-        // 1. Fetch Operators
-        const { data: opsData, error: opsError } = await supabaseClient
-            .from('operators')
-            .select('name')
-            .eq('active', true)
-            .order('name');
+        await withTimeout((async () => {
+            const { data: opsData, error: opsError } = await supabaseClient
+                .from('operators')
+                .select('name')
+                .eq('active', true)
+                .order('name');
+            if (opsError) throw opsError;
+            if (opsData) OPERATORS_LIST = opsData.map(o => o.name);
 
-        if (opsData && !opsError) {
-            OPERATORS_LIST = opsData.map(o => o.name);
-            console.log(`✅ Loaded ${OPERATORS_LIST.length} Operators`);
-        }
+            const { data: stData, error: stError } = await supabaseClient
+                .from('stations')
+                .select('name')
+                .eq('active', true)
+                .order('name');
+            if (stError) throw stError;
+            if (stData) STATIONS_LIST = stData.map(s => s.name);
 
-        // 2. Fetch Stations
-        const { data: stData, error: stError } = await supabaseClient
-            .from('stations')
-            .select('name')
-            .eq('active', true)
-            .order('name');
+            const { data: pmData, error: pmError } = await supabaseClient
+                .from('part_map')
+                .select('barcode_prefix, part_number')
+                .eq('active', true);
+            if (pmError) throw pmError;
+            if (pmData) {
+                PART_NUMBER_MAP = {};
+                pmData.forEach(row => {
+                    PART_NUMBER_MAP[row.barcode_prefix] = row.part_number;
+                });
+            }
+        })(), CONFIG_FETCH_TIMEOUT_MS);
 
-        if (stData && !stError) {
-            STATIONS_LIST = stData.map(s => s.name);
-            console.log(`✅ Loaded ${STATIONS_LIST.length} Stations`);
-        }
-
-        // 3. Fetch Part Map
-        const { data: pmData, error: pmError } = await supabaseClient
-            .from('part_map')
-            .select('barcode_prefix, part_number')
-            .eq('active', true);
-
-        if (pmData && !pmError) {
-            PART_NUMBER_MAP = {};
-            pmData.forEach(row => {
-                PART_NUMBER_MAP[row.barcode_prefix] = row.part_number;
-            });
-            console.log(`✅ Loaded ${Object.keys(PART_NUMBER_MAP).length} Part Mappings`);
-        } else {
-            console.warn('⚠️ Failed to load part_map (using defaults if any):', pmError);
-        }
-
+        saveConfigCache();
+        console.log(`✅ Loaded ${OPERATORS_LIST.length} operators, ${STATIONS_LIST.length} stations, ${Object.keys(PART_NUMBER_MAP).length} part mappings`);
         return true;
     } catch (e) {
         console.error('Config fetch error:', e);
