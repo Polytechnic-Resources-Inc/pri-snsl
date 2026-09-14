@@ -2201,25 +2201,26 @@ async function initApp() {
         if (supabaseBadge) supabaseBadge.style.display = 'inline-block';
     }
 
-    // Fetch config FIRST, then populate dropdowns
-    const success = await fetchPartNumberMap();
-
+    applyConfigCache();
     populateOperators();
     populateStations();
-
-    // Restore lock states AFTER dropdowns are populated
     restoreLockStates();
 
-    // CRITICAL: Enable scanning immediately, don't wait for loadLastScan()
     scanInput.disabled = false;
     scanInput.classList.add('ready');
     scanInput.placeholder = '✅ Ready to scan';
 
-    // v8.8.2: Load last scan AFTER operator/station are set (non-blocking)
-    // This checks localStorage, queued scans, and Supabase for most recent
-    loadLastScan().catch(err => console.warn('Failed to load last scan:', err));
+    fetchConfig()
+        .then((ok) => {
+            if (ok) {
+                populateOperators();
+                populateStations();
+                restoreLockStates();
+            }
+        })
+        .catch((err) => console.warn('Background config fetch failed:', err));
 
-    // Refresh history now that we have prefs loaded and dropdowns potentially set
+    loadLastScan().catch(err => console.warn('Failed to load last scan:', err));
     fetchHistory();
 
     // Register Service Worker for PWA caching (v8.8.2 enhanced)
