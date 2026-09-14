@@ -10,7 +10,7 @@ The scanner behavior is implemented in `app.js`, `scan-cache.js`, `supabase-heal
 
 ## Current Version
 
-Scanner UI and service worker: `v8.8.3`.
+Scanner UI and service worker: `v8.8.5`.
 
 Use the version badge in the scanning app and `service-worker.js` cache version as the runtime version check.
 

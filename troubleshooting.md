@@ -19,9 +19,9 @@ Troubleshooting should answer three questions:
 | `SCAN REJECTED`, `INVALID SCAN`, or red error | Barcode was incomplete, too short, damaged, or not recognized. | Clean the label, scan the full barcode once more, then set aside if it fails again. |
 | `DUPLICATE` | The same serial was recently scanned or already exists in the database. | Do not keep rescanning. Check recent scans and set aside if unclear. |
 | `QUEUED` | Scan saved on the tablet but not yet sent to the database. | Keep scanning if needed. Leave the app open until pending count returns to zero. |
-| Pending count stays above zero | Wi-Fi, internet, database reachability, or sync retry issue. | Check badges, wait 30 to 60 seconds, then reload once only if both badges are green. |
-| Operator or station list does not load | Tablet cannot reach configuration data yet. | Check Wi-Fi, refresh once, and contact a supervisor if still missing. |
-| Scan box is gray or locked | A scan is still processing or the app is loading. | Wait. If locked longer than 35 seconds, retry after it unlocks or contact a supervisor. |
+| Pending count stays above zero | Wi-Fi, internet, database reachability, or sync retry issue. | If you see **DOWN** or **Queued**, leave the app open. Do not clear site data. Refresh once only if pending is **0** and the scan box already says **Ready to scan**. |
+| Operator or station list does not load | Cached lists are missing and the tablet cannot reach configuration data yet. | If operator/station are already locked, keep scanning. If lists never fill after a minute, call a supervisor. Do not clear site data. |
+| Scan box is gray or locked | A scan is still processing or the app is starting. | Wait for **Ready to scan**. If operator/station are already locked, keep scanning. If it stays locked longer than 35 seconds, contact a supervisor. |
 | App seems outdated | Browser cache is serving an old app version. | Hard refresh or clear browser cache only after pending count is zero. |
 | Daily report missing | No scans, delayed workflow, missing secret, or email issue. | Supervisor/admin should check GitHub Actions and report settings. |
 
@@ -133,25 +133,24 @@ Supervisor notes:
 
 Symptoms:
 
-- Operator list shows loading.
+- Operator list is empty or still says Select Operator.
 - Your name is missing.
 - Station is wrong or missing.
 - Scan happened under the wrong operator or station.
 
 Likely causes:
 
-- Configuration data did not load yet.
+- Configuration data did not load yet and this tablet has no saved list.
 - Operator or station is not active in the database.
 - Previous tablet selection was saved locally.
 
 Fix:
 
-1. Wait a few seconds for lists to finish loading.
-2. Check Wi-Fi.
-3. Refresh once.
+1. If operator and station are already locked, keep scanning.
+2. Wait up to a minute for lists to fill.
+3. If lists never fill after a minute, call a supervisor. Do not clear site data.
 4. Select the correct operator and station before scanning.
-5. If your name or station is still missing, ask a supervisor to verify the active operator/station list.
-6. If scans were recorded under the wrong operator or station, use the dashboard correction process instead of deleting blindly.
+5. If scans were recorded under the wrong operator or station, use the dashboard correction process instead of deleting blindly.
 
 ### Locked Scan Box
 
@@ -169,10 +168,10 @@ Likely causes:
 
 Fix:
 
-1. Wait for the scan box to unlock.
+1. Wait for the scan box to unlock and show **Ready to scan**.
 2. If a timeout message appears, scan the item once more.
 3. If the scan box stays locked longer than 35 seconds, notify a supervisor.
-4. Refresh only if a supervisor confirms pending scans are safe.
+4. Refresh **once** only if pending is **0** and the scan box already says **Ready to scan**.
 
 ### Stale Version or Cache Issue
 

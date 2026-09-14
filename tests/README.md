@@ -18,6 +18,7 @@ node tests/test_hibc_check_digit.js
 node tests/test_scan_cache.js
 node tests/test_sync_classification.js
 node tests/test_supabase_health.js
+node tests/test_config_cache.js
 node tests/test_760e_endcap_fix.js
 node tests/test_759e2_no_strip.js
 node tests/test_759el_quick.js
@@ -42,6 +43,7 @@ Some report helper checks may require the `scripts` directory on the Python path
 | `test_scan_cache.js` | Recent duplicate cache behavior |
 | `test_sync_classification.js` | Supabase response classification |
 | `test_supabase_health.js` | Supabase health check behavior |
+| `test_config_cache.js` | Config cache parse/save rules and fetch timeout helper |
 | `test_760e_endcap_fix.js` | 100760 end-cap handling |
 | `test_759e2_no_strip.js` | 759E2 trailing digit preservation |
 | `test_759el_quick.js` | 759EL parsing behavior |

@@ -4,7 +4,9 @@
 
 The scanner is offline-first for accepted scans: it writes each accepted scan to browser IndexedDB before attempting a network insert. If the tablet is offline, Supabase is unreachable, or the insert attempt fails, the scan remains queued for a later retry.
 
-Current scanner version: `v8.8.3`.
+Current scanner version: `v8.8.5`.
+
+Startup no longer waits on a live database call to unlock the scan box. Health checks use an 8 second GET against the operators table. Operator, station, and part map lists are cached on the tablet; the scan box enables first, then live config refreshes in the background.
 
 ## Purpose
 

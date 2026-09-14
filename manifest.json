@@ -1,7 +1,7 @@
 {
     "short_name": "SeeScan",
     "name": "Polytechnic Serial Number Scan Log",
-    "version": "8.8.3",
+    "version": "8.8.5",
     "icons": [
         {
             "src": "icon-192.png",

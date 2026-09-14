@@ -4,7 +4,7 @@
 
 This document describes how the scanner prevents obvious repeat scans and how queued scans are retried without changing production scanning behavior.
 
-Current scanner version: `v8.8.3`.
+Current scanner version: `v8.8.5`.
 
 Runtime sources:
 

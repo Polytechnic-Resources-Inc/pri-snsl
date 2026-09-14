@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.5: Non-blocking config load + 8s health/config timeouts + local config cache
 // v8.8.4: Reject UNKNOWN / recover truncated GS1-128 (missing leading 01) before insert
 // v8.8.3: Hotfix - Added '757E2' to HIBC_MAX_TRAILING_BEFORE_STRIP (5-digit serial preservation)
 // v8.8.2: Hotfix - Fixed VALIDATION_CONFIG undefined reference
@@ -63,6 +64,56 @@ const SHARED_SECRET = 'qk92X3vE7LrT8c59H1zUM4Bn0ySDFwGp';
 let PART_NUMBER_MAP = {};
 let OPERATORS_LIST = [];
 let STATIONS_LIST = [];
+
+const CONFIG_CACHE_KEY = 'snsl-config-v1';
+const CONFIG_FETCH_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, ms) {
+    return new Promise((resolve, reject) => {
+        const id = setTimeout(() => {
+            const err = new Error('timeout');
+            err.name = 'AbortError';
+            reject(err);
+        }, ms);
+        promise.then(
+            (value) => { clearTimeout(id); resolve(value); },
+            (err) => { clearTimeout(id); reject(err); }
+        );
+    });
+}
+
+function saveConfigCache() {
+    if (!OPERATORS_LIST.length || !STATIONS_LIST.length) return;
+    if (!PART_NUMBER_MAP || typeof PART_NUMBER_MAP !== 'object') return;
+    try {
+        localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify({
+            operators: OPERATORS_LIST,
+            stations: STATIONS_LIST,
+            partMap: PART_NUMBER_MAP,
+            savedAt: new Date().toISOString()
+        }));
+    } catch (e) {
+        console.warn('Config cache save failed:', e);
+    }
+}
+
+function applyConfigCache() {
+    try {
+        const raw = localStorage.getItem(CONFIG_CACHE_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        if (!Array.isArray(data.operators) || !data.operators.length) return false;
+        if (!Array.isArray(data.stations) || !data.stations.length) return false;
+        if (!data.partMap || typeof data.partMap !== 'object') return false;
+        OPERATORS_LIST = data.operators;
+        STATIONS_LIST = data.stations;
+        PART_NUMBER_MAP = data.partMap;
+        return true;
+    } catch (e) {
+        console.warn('Config cache read failed:', e);
+        return false;
+    }
+}
 
 // ===== BARCODE VALIDATION CONFIG =====
 // Client-side validation to reject malformed scans BEFORE they reach the database
@@ -924,48 +975,39 @@ function initClock() {
  */
 async function fetchConfig() {
     console.log('🔄 Fetching config from Supabase...');
-
     try {
-        // 1. Fetch Operators
-        const { data: opsData, error: opsError } = await supabaseClient
-            .from('operators')
-            .select('name')
-            .eq('active', true)
-            .order('name');
+        await withTimeout((async () => {
+            const { data: opsData, error: opsError } = await supabaseClient
+                .from('operators')
+                .select('name')
+                .eq('active', true)
+                .order('name');
+            if (opsError) throw opsError;
+            if (opsData) OPERATORS_LIST = opsData.map(o => o.name);
 
-        if (opsData && !opsError) {
-            OPERATORS_LIST = opsData.map(o => o.name);
-            console.log(`✅ Loaded ${OPERATORS_LIST.length} Operators`);
-        }
+            const { data: stData, error: stError } = await supabaseClient
+                .from('stations')
+                .select('name')
+                .eq('active', true)
+                .order('name');
+            if (stError) throw stError;
+            if (stData) STATIONS_LIST = stData.map(s => s.name);
 
-        // 2. Fetch Stations
-        const { data: stData, error: stError } = await supabaseClient
-            .from('stations')
-            .select('name')
-            .eq('active', true)
-            .order('name');
+            const { data: pmData, error: pmError } = await supabaseClient
+                .from('part_map')
+                .select('barcode_prefix, part_number')
+                .eq('active', true);
+            if (pmError) throw pmError;
+            if (pmData) {
+                PART_NUMBER_MAP = {};
+                pmData.forEach(row => {
+                    PART_NUMBER_MAP[row.barcode_prefix] = row.part_number;
+                });
+            }
+        })(), CONFIG_FETCH_TIMEOUT_MS);
 
-        if (stData && !stError) {
-            STATIONS_LIST = stData.map(s => s.name);
-            console.log(`✅ Loaded ${STATIONS_LIST.length} Stations`);
-        }
-
-        // 3. Fetch Part Map
-        const { data: pmData, error: pmError } = await supabaseClient
-            .from('part_map')
-            .select('barcode_prefix, part_number')
-            .eq('active', true);
-
-        if (pmData && !pmError) {
-            PART_NUMBER_MAP = {};
-            pmData.forEach(row => {
-                PART_NUMBER_MAP[row.barcode_prefix] = row.part_number;
-            });
-            console.log(`✅ Loaded ${Object.keys(PART_NUMBER_MAP).length} Part Mappings`);
-        } else {
-            console.warn('⚠️ Failed to load part_map (using defaults if any):', pmError);
-        }
-
+        saveConfigCache();
+        console.log(`✅ Loaded ${OPERATORS_LIST.length} operators, ${STATIONS_LIST.length} stations, ${Object.keys(PART_NUMBER_MAP).length} part mappings`);
         return true;
     } catch (e) {
         console.error('Config fetch error:', e);
@@ -2160,25 +2202,26 @@ async function initApp() {
         if (supabaseBadge) supabaseBadge.style.display = 'inline-block';
     }
 
-    // Fetch config FIRST, then populate dropdowns
-    const success = await fetchPartNumberMap();
-
+    applyConfigCache();
     populateOperators();
     populateStations();
-
-    // Restore lock states AFTER dropdowns are populated
     restoreLockStates();
 
-    // CRITICAL: Enable scanning immediately, don't wait for loadLastScan()
     scanInput.disabled = false;
     scanInput.classList.add('ready');
     scanInput.placeholder = '✅ Ready to scan';
 
-    // v8.8.2: Load last scan AFTER operator/station are set (non-blocking)
-    // This checks localStorage, queued scans, and Supabase for most recent
-    loadLastScan().catch(err => console.warn('Failed to load last scan:', err));
+    fetchConfig()
+        .then((ok) => {
+            if (ok) {
+                populateOperators();
+                populateStations();
+                restoreLockStates();
+            }
+        })
+        .catch((err) => console.warn('Background config fetch failed:', err));
 
-    // Refresh history now that we have prefs loaded and dropdowns potentially set
+    loadLastScan().catch(err => console.warn('Failed to load last scan:', err));
     fetchHistory();
 
     // Register Service Worker for PWA caching (v8.8.2 enhanced)

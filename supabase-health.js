@@ -6,13 +6,15 @@
  * Health check configuration
  */
 const HEALTH_CHECK_CONFIG = {
-    timeout: 3000,           // 3 second timeout for health check
+    timeout: 8000,           // 8 second timeout for health check
     checkInterval: 15000,    // Check every 15 seconds
     failureThreshold: 2,     // 2 consecutive failures = DOWN
-    degradationLatency: 2000,// Latency > 2s = DEGRADED
+    degradationLatency: 4000,// Latency > 4s = DEGRADED
     backoffMultiplier: 1.5,  // Exponential backoff when down
     maxBackoffInterval: 60000 // Max 60 seconds between checks when down
 };
+
+const HEALTH_PROBE_PATH = '/rest/v1/operators?select=id&limit=1';
 
 /**
  * Connectivity state
@@ -30,9 +32,9 @@ const connectivityState = {
 
 /**
  * Perform a lightweight Supabase health check with timeout
- * Uses a HEAD request to the Supabase REST endpoint
+ * Uses a GET on a real table so anon keys are accepted
  *
- * @returns {Promise<{ reachable: boolean, latency: number, error: string|null }>}
+ * @returns {Promise<{ reachable: boolean, latency: number, error: string|null }> }
  */
 async function checkSupabaseHealth() {
     const startTime = performance.now();
@@ -40,13 +42,12 @@ async function checkSupabaseHealth() {
     const timeoutId = setTimeout(() => controller.abort(), HEALTH_CHECK_CONFIG.timeout);
 
     try {
-        // Use a lightweight HEAD request to check reachability
-        // We hit the /rest/v1/ endpoint which should respond quickly
-        const response = await fetch(`${SUPABASE_URL}/rest/v1/`, {
-            method: 'HEAD',
+        const response = await fetch(`${SUPABASE_URL}${HEALTH_PROBE_PATH}`, {
+            method: 'GET',
             headers: {
                 'apikey': SUPABASE_ANON_KEY,
-                'Content-Type': 'application/json'
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`,
+                'Accept': 'application/json'
             },
             signal: controller.signal
         });
@@ -216,35 +217,24 @@ function getConnectivityStatus() {
 /**
  * Start periodic health checks
  */
-let healthCheckInterval = null;
+let healthCheckTimer = null;
+
+function scheduleNextHealthCheck() {
+    if (healthCheckTimer) {
+        clearTimeout(healthCheckTimer);
+    }
+    healthCheckTimer = setTimeout(async () => {
+        await updateConnectivityState();
+        scheduleNextHealthCheck();
+    }, connectivityState.currentInterval);
+}
 
 function startHealthChecks() {
-    if (healthCheckInterval) {
-        clearInterval(healthCheckInterval);
+    if (healthCheckTimer) {
+        clearTimeout(healthCheckTimer);
+        healthCheckTimer = null;
     }
-
-    // Initial check
-    updateConnectivityState();
-
-    // Periodic checks
-    healthCheckInterval = setInterval(() => {
-        updateConnectivityState();
-    }, connectivityState.currentInterval);
-
-    // Update interval dynamically (for backoff)
-    const originalSetInterval = window.setInterval;
-    window.setInterval = function(fn, delay) {
-        const wrappedFn = () => {
-            fn();
-            // Reschedule with current interval
-            if (healthCheckInterval) {
-                clearInterval(healthCheckInterval);
-                healthCheckInterval = setInterval(wrappedFn, connectivityState.currentInterval);
-            }
-        };
-        return originalSetInterval.call(window, wrappedFn, delay);
-    };
-
+    updateConnectivityState().finally(scheduleNextHealthCheck);
     console.log('🔍 Supabase health checks started');
 }
 
@@ -252,9 +242,9 @@ function startHealthChecks() {
  * Stop health checks
  */
 function stopHealthChecks() {
-    if (healthCheckInterval) {
-        clearInterval(healthCheckInterval);
-        healthCheckInterval = null;
+    if (healthCheckTimer) {
+        clearTimeout(healthCheckTimer);
+        healthCheckTimer = null;
     }
 }
 
@@ -296,6 +286,8 @@ if (typeof module !== 'undefined' && module.exports) {
         forceHealthCheck,
         startHealthChecks,
         stopHealthChecks,
-        checkSupabaseHealth
+        checkSupabaseHealth,
+        HEALTH_CHECK_CONFIG,
+        HEALTH_PROBE_PATH
     };
 }

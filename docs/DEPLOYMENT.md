@@ -20,8 +20,8 @@ Do not use this guide to rotate credentials. Use `docs/SECRETS_INVENTORY.md` for
 ## Critical Deployment Risks
 
 - **Stale service worker:** Tablets may keep running old cached files if the service worker/cache version does not move clients to the new release.
-- **`CACHE_VERSION` dependency:** `service-worker.js` uses `CACHE_VERSION` to name the cache and delete older caches. The current inspected value is `v8.8.3`.
-- **Version badge mismatch:** `index.html` displays the scanner version badge. The README says the scanner UI and service worker are currently `v8.8.3`.
+- **`CACHE_VERSION` dependency:** `service-worker.js` uses `CACHE_VERSION` to name the cache and delete older caches. The current inspected value is `v8.8.5`.
+- **Version badge mismatch:** `index.html` displays the scanner version badge. The README says the scanner UI and service worker are currently `v8.8.5`.
 - **IndexedDB queue data:** Pending scans live in browser IndexedDB. Clearing site data while pending count is above zero can delete unsynced scans.
 - **Hardcoded frontend Supabase config:** Supabase URL/key changes require frontend source edits, redeploy, and cache verification. Updating GitHub Actions secrets alone does not update tablets.
 - **Rollback can also be cached:** Promoting an older Vercel deployment may not be enough if tablets still run a different cached service worker/app shell.
@@ -50,9 +50,9 @@ Complete this checklist before deploying:
 
 Current inspected version references:
 
-- README current version: `v8.8.3`.
-- `service-worker.js` header and `CACHE_VERSION`: `v8.8.3`.
-- `index.html` version badge/footer: `v8.8.3`.
+- README current version: `v8.8.5`.
+- `service-worker.js` header and `CACHE_VERSION`: `v8.8.5`.
+- `index.html` version badge/footer: `v8.8.5`.
 - `app.js` contains version history comments at the top. It is not a formal changelog.
 
 Operational rules:
