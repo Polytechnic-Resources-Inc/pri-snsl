@@ -64,6 +64,56 @@ let PART_NUMBER_MAP = {};
 let OPERATORS_LIST = [];
 let STATIONS_LIST = [];
 
+const CONFIG_CACHE_KEY = 'snsl-config-v1';
+const CONFIG_FETCH_TIMEOUT_MS = 8000;
+
+function withTimeout(promise, ms) {
+    return new Promise((resolve, reject) => {
+        const id = setTimeout(() => {
+            const err = new Error('timeout');
+            err.name = 'AbortError';
+            reject(err);
+        }, ms);
+        promise.then(
+            (value) => { clearTimeout(id); resolve(value); },
+            (err) => { clearTimeout(id); reject(err); }
+        );
+    });
+}
+
+function saveConfigCache() {
+    if (!OPERATORS_LIST.length || !STATIONS_LIST.length) return;
+    if (!PART_NUMBER_MAP || typeof PART_NUMBER_MAP !== 'object') return;
+    try {
+        localStorage.setItem(CONFIG_CACHE_KEY, JSON.stringify({
+            operators: OPERATORS_LIST,
+            stations: STATIONS_LIST,
+            partMap: PART_NUMBER_MAP,
+            savedAt: new Date().toISOString()
+        }));
+    } catch (e) {
+        console.warn('Config cache save failed:', e);
+    }
+}
+
+function applyConfigCache() {
+    try {
+        const raw = localStorage.getItem(CONFIG_CACHE_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        if (!Array.isArray(data.operators) || !data.operators.length) return false;
+        if (!Array.isArray(data.stations) || !data.stations.length) return false;
+        if (!data.partMap || typeof data.partMap !== 'object') return false;
+        OPERATORS_LIST = data.operators;
+        STATIONS_LIST = data.stations;
+        PART_NUMBER_MAP = data.partMap;
+        return true;
+    } catch (e) {
+        console.warn('Config cache read failed:', e);
+        return false;
+    }
+}
+
 // ===== BARCODE VALIDATION CONFIG =====
 // Client-side validation to reject malformed scans BEFORE they reach the database
 const BARCODE_VALIDATION = {
