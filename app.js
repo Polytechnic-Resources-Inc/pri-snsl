@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.5: Non-blocking config load + 8s health/config timeouts + local config cache
 // v8.8.4: Reject UNKNOWN / recover truncated GS1-128 (missing leading 01) before insert
 // v8.8.3: Hotfix - Added '757E2' to HIBC_MAX_TRAILING_BEFORE_STRIP (5-digit serial preservation)
 // v8.8.2: Hotfix - Fixed VALIDATION_CONFIG undefined reference

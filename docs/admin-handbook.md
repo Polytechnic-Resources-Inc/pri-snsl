@@ -24,7 +24,7 @@ This is not a deployment, credential, disaster recovery, or engineering design g
 | Queue behavior | Accepted scans are stored in browser IndexedDB before sync. A pending count above zero means the tablet still has unsynced scan data. |
 | Offline behavior | `QUEUED` means the scan was saved locally and should sync later when internet and Supabase are reachable. It is not safe to clear site data while scans are queued. |
 
-Current inspected scanner version: `v8.8.3`.
+Current inspected scanner version: `v8.8.5`.
 
 ## Admin Responsibilities
 

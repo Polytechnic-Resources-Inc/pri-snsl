@@ -4,7 +4,7 @@
 
 The scanner is offline-first for accepted scans: it writes each accepted scan to browser IndexedDB before attempting a network insert. If the tablet is offline, Supabase is unreachable, or the insert attempt fails, the scan remains queued for a later retry.
 
-Current scanner version: `v8.8.3`.
+Current scanner version: `v8.8.5`.
 
 ## Purpose
 
