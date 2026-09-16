@@ -363,7 +363,7 @@
         <div class="date-filter" id="dateFilter" style="display: none;">
             <button class="date-btn active" data-range="today">Today</button>
             <button class="date-btn" data-range="week">This Week</button>
-            <button class="date-btn" data-range="all">All Time</button>
+            <button class="date-btn" data-range="all">Recent scans</button>
         </div>
 
         <!-- Scans List -->
@@ -386,7 +386,7 @@
         <p>View only — No editing</p>
     </div>
 
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="vendor/supabase.min.js"></script>
     <script>
         // Supabase config (same as dashboard)
         const SUPABASE_URL = 'https://ospedluufxgpfvqtznej.supabase.co';
@@ -530,6 +530,11 @@
             }
         }
 
+        // Keep operator/database text inert in HTML.
+        function escapeHtml(text) {
+            return String(text ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+        }
+
         // Update display based on current date range
         function updateDisplay() {
             const todayEST = getTodayEST();
@@ -537,7 +542,7 @@
 
             // Filter scans based on date range
             let filteredScans = allScans;
-            let dateLabel = 'All Time';
+            let dateLabel = 'Recent scans (latest 1,000)';
 
             if (currentDateRange === 'today') {
                 filteredScans = allScans.filter(scan => {
@@ -570,7 +575,7 @@
             }
 
             // Update scans title
-            document.getElementById('scansTitle').textContent = `Your Scans (${filteredScans.length})`;
+            document.getElementById('scansTitle').textContent = `Your Scans (${filteredScans.length}) — latest 1,000 window${allScans.length >= 1000 ? ' reached' : ''}`;
 
             // Render scans list
             if (filteredScans.length === 0) {
@@ -586,10 +591,10 @@
 
                 html += `
                     <div class="scan-row">
-                        <div class="scan-time">${timeDisplay}</div>
+                        <div class="scan-time">${escapeHtml(timeDisplay)}</div>
                         <div class="scan-info">
-                            <div class="scan-serial">${scan.serial_number || '-'}</div>
-                            <div class="scan-part">${scan.part_id || '-'}</div>
+                            <div class="scan-serial">${escapeHtml(scan.serial_number || '-')}</div>
+                            <div class="scan-part">${escapeHtml(scan.part_id || '-')}</div>
                         </div>
                     </div>
                 `;

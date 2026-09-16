@@ -998,10 +998,10 @@
     <div class="operator-cards-container" id="operatorCardsContainer">
         <div class="operator-cards-header">
             <div class="pulse"></div>
-            <span>Live Operator Status (Today)</span>
+            <span id="operatorRangeHeading">Operator scans — selected date range</span>
         </div>
         <div class="operator-cards" id="operatorCards">
-            <div class="no-operators-today">No scans yet today...</div>
+            <div class="no-operators-today">No scans in the selected date range.</div>
         </div>
     </div>
 
@@ -1048,7 +1048,7 @@
             </div>
             <button class="btn btn-primary" onclick="fetchScans()">🔍 Apply</button>
             <button class="btn btn-secondary" onclick="clearFilters()">✕ Clear</button>
-            <button class="btn btn-success" onclick="exportXLSX()">📥 Export XLSX</button>
+            <button class="btn btn-success" id="exportXlsxBtn" onclick="exportXLSX()">📥 Export XLSX</button>
             <button class="btn btn-add" onclick="openAddModal()">➕ Add Record</button>
         </div>
 
@@ -1201,7 +1201,7 @@
         </div>
     </div>
 
-    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script src="vendor/supabase.min.js"></script>
     <script>
         // Supabase config (same as main app)
         const SUPABASE_URL = 'https://ospedluufxgpfvqtznej.supabase.co';
@@ -1281,15 +1281,146 @@
             });
         }
 
-        // Fetch scans for the selected Eastern date range (1000-row pages).
-        // No date range: newest 1000 only. Dated range: up to 5000.
+        let fetchGeneration = 0;
+        let loadState = 'idle';
+        let loadedRange = '';
+        let loadMessage = 'Choose a date range.';
+        let usualByOperator = Object.create(null);
+        let usualStatus = 'idle';
+        let usualGeneration = 0;
+
+        function previousWeekdayYmds(fromYmd, count = 5) {
+            const days = [];
+            let cursor = fromYmd;
+            let guard = 0;
+            while (days.length < count && guard++ < 21) {
+                cursor = addDaysYmd(cursor, -1);
+                const [year, month, day] = String(cursor).split('-').map(Number);
+                if (!year || !month || !day) break;
+                const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
+                if (dow !== 0 && dow !== 6) days.push(cursor);
+            }
+            return days;
+        }
+
+        function easternYmdFromIso(iso) {
+            const d = new Date(iso);
+            if (Number.isNaN(d.getTime())) return '';
+            return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        }
+
+        function computeUsualByOperator(rows, ymds) {
+            const allowed = new Set(ymds);
+            const n = ymds.length || 1;
+            const totals = Object.create(null);
+            for (const row of rows || []) {
+                const day = easternYmdFromIso(row.created_at);
+                if (!allowed.has(day)) continue;
+                const op = row.operator_name || 'Unknown';
+                totals[op] = (totals[op] || 0) + 1;
+            }
+            const usual = Object.create(null);
+            for (const op of Object.keys(totals)) usual[op] = totals[op] / n;
+            return usual;
+        }
+
+        function formatUsual(op) {
+            if (usualStatus !== 'ready') return '—';
+            const value = usualByOperator[op];
+            const n = value == null ? 0 : value;
+            if (Number.isInteger(n)) return String(n);
+            return String(Math.round(n * 10) / 10);
+        }
+
+        async function fetchUsualWeekdays() {
+            const generation = ++usualGeneration;
+            usualStatus = 'loading';
+            try {
+                const today = easternYmdToday();
+                const ymds = previousWeekdayYmds(today, 5);
+                const oldest = ymds[ymds.length - 1];
+                const fromRange = utcRangeForEasternYmd(oldest);
+                const todayRange = utcRangeForEasternYmd(today);
+                if (!fromRange || !todayRange || ymds.length === 0) throw new Error('Invalid usual range');
+                let allData = [];
+                let page = 0;
+                const fetchPageSize = 1000;
+                let hasMore = true;
+                while (hasMore) {
+                    const start = page * fetchPageSize;
+                    const end = start + fetchPageSize - 1;
+                    const { data, error } = await supabaseClient
+                        .from('scans')
+                        .select('operator_name,created_at')
+                        .order('created_at', { ascending: false })
+                        .order('id', { ascending: false })
+                        .range(start, end)
+                        .gte('created_at', fromRange.gte)
+                        .lt('created_at', todayRange.gte);
+                    if (generation !== usualGeneration) return;
+                    if (error) throw error;
+                    if (!Array.isArray(data)) throw new Error('Incomplete usual response');
+                    allData = allData.concat(data);
+                    hasMore = data.length === fetchPageSize;
+                    page++;
+                }
+                if (generation !== usualGeneration) return;
+                usualByOperator = computeUsualByOperator(allData, ymds);
+                usualStatus = 'ready';
+            } catch (e) {
+                if (generation !== usualGeneration) return;
+                usualByOperator = Object.create(null);
+                usualStatus = 'error';
+                console.error('Usual weekday fetch error:', e);
+            }
+            if (generation === usualGeneration) updateOperatorCards();
+        }
+
+        function rangeKey() {
+            return document.getElementById('filterDateFrom').value + '/' + document.getElementById('filterDateTo').value;
+        }
+
+        function canExport() {
+            return loadState === 'complete' && loadedRange === rangeKey();
+        }
+
+        function updateExportButton() {
+            const exportBtn = document.getElementById('exportXlsxBtn');
+            if (exportBtn) exportBtn.disabled = !canExport();
+        }
+
+        function invalidateScans(message = 'Date changed — apply the selected range.') {
+            fetchGeneration++;
+            loadState = 'idle';
+            loadedRange = '';
+            loadMessage = message;
+            allScans = [];
+            filteredScans = [];
+            totalCount.textContent = '-';
+            document.getElementById('lastScanTime').textContent = '-';
+            document.getElementById('operatorCards').textContent = message;
+            renderTable();
+            updateExportButton();
+        }
+
+        ['filterDateFrom', 'filterDateTo'].forEach(id => {
+            document.getElementById(id).addEventListener('input', () => invalidateScans());
+            document.getElementById(id).addEventListener('change', () => fetchScans());
+        });
+
+        // Fetch the entire selected Eastern date range in stable pages.
         async function fetchScans() {
+            invalidateScans('Loading selected range...');
+            loadState = 'loading';
+            const generation = fetchGeneration;
+            const requestedRange = rangeKey();
+            const isCurrent = () => generation === fetchGeneration && requestedRange === rangeKey();
             try {
                 let allData = [];
                 let page = 0;
                 const fetchPageSize = 1000;
                 let hasMore = true;
-                let fetchTruncated = false;
+
 
                 const dateFrom = document.getElementById('filterDateFrom').value;
                 const dateTo = document.getElementById('filterDateTo').value;
@@ -1297,7 +1428,9 @@
                 const toRange = utcRangeForEasternYmd(dateTo);
                 const gte = fromRange ? fromRange.gte : null;
                 const lt = toRange ? toRange.lt : null;
-                const maxPages = (gte || lt) ? 5 : 1;
+                if ((dateFrom && !fromRange) || (dateTo && !toRange) || (dateFrom && dateTo && dateFrom > dateTo)) {
+                    throw new Error('Invalid date range');
+                }
 
                 while (hasMore) {
                     const start = page * fetchPageSize;
@@ -1307,13 +1440,15 @@
                         .from('scans')
                         .select('*')
                         .order('created_at', { ascending: false })
+                        .order('id', { ascending: false })
                         .range(start, end);
                     if (gte) query = query.gte('created_at', gte);
                     if (lt) query = query.lt('created_at', lt);
 
                     const { data, error } = await query;
-
+                    if (!isCurrent()) return;
                     if (error) throw error;
+                    if (!Array.isArray(data)) throw new Error('Incomplete response');
 
                     if (data && data.length > 0) {
                         allData = allData.concat(data);
@@ -1323,16 +1458,16 @@
                         hasMore = false;
                     }
 
-                    if (page >= maxPages) {
-                        if (hasMore) {
-                            fetchTruncated = true;
-                            console.warn(`Stopped after ${maxPages * fetchPageSize} scans. Narrow the date range.`);
-                        }
-                        break;
-                    }
+                    loadMessage = `Loading selected range... ${allData.length.toLocaleString()} scans received`;
+                    footerInfo.textContent = loadMessage;
                 }
 
+                if (!isCurrent()) return;
                 allScans = allData;
+                loadedRange = requestedRange;
+                loadState = 'complete';
+                loadMessage = `Complete selected range: ${allScans.length.toLocaleString()} scans loaded`;
+                updateExportButton();
 
                 // Populate filter dropdowns
                 populateFilters();
@@ -1342,6 +1477,7 @@
 
                 // Update live operator status cards
                 updateOperatorCards();
+                await fetchUsualWeekdays();
 
                 // Update stats
                 totalCount.textContent = allScans.length.toLocaleString();
@@ -1365,13 +1501,15 @@
                     document.getElementById('lastScanTime').textContent = relativeTime;
                 }
 
-                if (fetchTruncated) {
-                    footerInfo.textContent = `${footerInfo.textContent} · showing newest loaded rows — narrow dates to see more`;
-                }
-
             } catch (e) {
+                if (!isCurrent()) return;
+                invalidateScans('Error loading selected range. Please refresh.');
+                loadState = 'error';
+                loadMessage = 'Error loading selected range. Please refresh.';
+                updateExportButton();
                 console.error('Fetch error:', e);
-                tableBody.innerHTML = '<tr><td colspan="6" class="empty">Error loading data. Please refresh.</td></tr>';
+                tableBody.innerHTML = '<tr><td colspan="8" class="empty">Error loading data. Please refresh.</td></tr>';
+                footerInfo.textContent = loadMessage;
             }
         }
 
@@ -1379,26 +1517,18 @@
         function updateOperatorCards() {
             const cardsContainer = document.getElementById('operatorCards');
 
-            // Get today's date in EST
             const now = new Date();
-            const todayEST = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-
-            // Filter scans for today only
-            const todayScans = allScans.filter(scan => {
-                if (!scan.created_at) return false;
-                const scanDate = new Date(scan.created_at);
-                const scanDateEST = scanDate.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-                return scanDateEST === todayEST;
-            });
+            const todayScans = allScans;
+            document.getElementById('operatorRangeHeading').textContent = `Operator scans — ${document.getElementById('filterDateFrom').value || 'Beginning'} to ${document.getElementById('filterDateTo').value || 'Now'}`;
 
             // If no scans today, show placeholder
             if (todayScans.length === 0) {
-                cardsContainer.innerHTML = '<div class="no-operators-today">No scans yet today...</div>';
+                cardsContainer.innerHTML = '<div class="no-operators-today">No scans in the selected date range.</div>';
                 return;
             }
 
             // Group by operator
-            const operatorData = {};
+            const operatorData = Object.create(null);
             todayScans.forEach(scan => {
                 const op = scan.operator_name || 'Unknown';
                 if (!operatorData[op]) {
@@ -1427,14 +1557,15 @@
             sortedOperators.forEach(op => {
                 const data = operatorData[op];
                 const lastScanTime = data.lastScan;
-                const diffMs = now - lastScanTime;
+                const validLast = lastScanTime && !Number.isNaN(lastScanTime.getTime());
+                const diffMs = validLast ? (now - lastScanTime) : NaN;
                 const diffMins = Math.floor(diffMs / 60000);
 
-                // Determine card status class
                 let statusClass = '';
                 let timeAgoText = '';
-
-                if (diffMins < 15) {
+                if (!validLast) {
+                    timeAgoText = '';
+                } else if (diffMins < 15) {
                     statusClass = 'active-recently';
                     timeAgoText = diffMins < 1 ? 'Just now' : `${diffMins} min ago`;
                 } else if (diffMins < 60) {
@@ -1448,12 +1579,11 @@
 
                 html += `
                     <div class="operator-card ${statusClass}">
-                        <div class="operator-card-name">${op}</div>
-                        <div class="operator-card-stats">Scans: <strong>${data.count}</strong></div>
+                        <div class="operator-card-name">${escapeHtml(op)}</div>
+                        <div class="operator-card-stats">Scans: <strong>${Number(data.count)}</strong></div>
+                        <div class="operator-card-stats" title="Average scans on the last 5 weekdays, not including today">Usual: <strong>${escapeHtml(formatUsual(op))}</strong></div>
                         <div class="operator-card-last">
-                            <span class="serial">${data.lastSerial}</span>
-                            <span class="part">${data.lastPart}</span>
-                            <span class="time-ago">${timeAgoText}</span>
+                            <span class="time-ago">${escapeHtml(timeAgoText)}</span>
                         </div>
                     </div>
                 `;
@@ -1487,8 +1617,8 @@
                     <div class="multi-select-list" id="${type}List">
                         ${items.map(item => `
                             <label>
-                                <input type="checkbox" value="${item}" ${selected.includes(item) ? 'checked' : ''} onchange="updateMultiSelect('${type}')">
-                                ${item}
+                                <input type="checkbox" value="${escapeHtml(item)}" ${selected.includes(item) ? 'checked' : ''} onchange="updateMultiSelect('${type}')">
+                                ${escapeHtml(item)}
                             </label>
                         `).join('')}
                     </div>
@@ -1523,7 +1653,7 @@
                 btnText.textContent = type === 'operator' ? 'All Operators' :
                     type === 'station' ? 'All Stations' : 'All Parts';
             } else if (checked.length === 1) {
-                btnText.textContent = checked[0].value;
+                btnText.textContent = escapeHtml(checked[0].value);
             } else {
                 btnText.textContent = `${checked.length} selected`;
             }
@@ -1603,7 +1733,7 @@
                 btnText.textContent = type === 'operator' ? 'All Operators' :
                     type === 'station' ? 'All Stations' : 'All Parts';
             } else if (checked.length === 1) {
-                btnText.textContent = checked[0].value;
+                btnText.textContent = escapeHtml(checked[0].value);
             } else {
                 btnText.textContent = `${checked.length} selected`;
             }
@@ -1621,6 +1751,26 @@
         let currentSort = { column: 'created_at', direction: 'desc' };
 
         // Sort by column
+        function applySort() {
+            const column = currentSort.column;
+            filteredScans.sort((a, b) => {
+                let valA = a[column] || '';
+                let valB = b[column] || '';
+
+                if (column === 'created_at') {
+                    valA = new Date(valA);
+                    valB = new Date(valB);
+                } else {
+                    valA = String(valA).toLowerCase();
+                    valB = String(valB).toLowerCase();
+                }
+
+                if (valA < valB) return currentSort.direction === 'asc' ? -1 : 1;
+                if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
+                return 0;
+            });
+        }
+
         function sortBy(column) {
             // Toggle direction if same column
             if (currentSort.column === column) {
@@ -1644,23 +1794,7 @@
                 if (icon) icon.textContent = currentSort.direction === 'asc' ? '↑' : '↓';
             }
 
-            // Sort the data
-            filteredScans.sort((a, b) => {
-                let valA = a[column] || '';
-                let valB = b[column] || '';
-
-                if (column === 'created_at') {
-                    valA = new Date(valA);
-                    valB = new Date(valB);
-                } else {
-                    valA = String(valA).toLowerCase();
-                    valB = String(valB).toLowerCase();
-                }
-
-                if (valA < valB) return currentSort.direction === 'asc' ? -1 : 1;
-                if (valA > valB) return currentSort.direction === 'asc' ? 1 : -1;
-                return 0;
-            });
+            applySort();
 
             renderTable();
         }
@@ -1709,6 +1843,7 @@
             });
 
             currentPage = 1; // Reset to first page when filters change
+            applySort();
             renderTable();
         }
 
@@ -1717,8 +1852,8 @@
             filteredCount.textContent = filteredScans.length.toLocaleString();
 
             // Calculate pagination
-            totalPages = Math.ceil(filteredScans.length / pageSize);
-            if (currentPage > totalPages) currentPage = totalPages || 1;
+            totalPages = Math.max(1, Math.ceil(filteredScans.length / pageSize));
+            if (currentPage > totalPages) currentPage = totalPages;
 
             const startIndex = (currentPage - 1) * pageSize;
             const endIndex = Math.min(startIndex + pageSize, filteredScans.length);
@@ -1726,20 +1861,27 @@
 
             // Update footer info
             if (filteredScans.length === 0) {
-                footerInfo.textContent = 'No scans to display';
+                footerInfo.textContent = loadMessage + ' — no scans to display';
             } else {
-                footerInfo.textContent = `Showing ${startIndex + 1}-${endIndex} of ${filteredScans.length.toLocaleString()} scans`;
+                footerInfo.textContent = `${loadMessage} — showing ${startIndex + 1}-${endIndex} of ${filteredScans.length.toLocaleString()} matching scans`;
             }
 
             // Update pagination controls
             updatePaginationControls();
 
             if (filteredScans.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="8" class="empty">No scans match your filters.</td></tr>';
+                if (loadState === 'error') {
+                    tableBody.innerHTML = '<tr><td colspan="8" class="empty">Error loading data. Please refresh.</td></tr>';
+                } else if (loadState === 'loading') {
+                    tableBody.innerHTML = '<tr><td colspan="8" class="loading">Loading scan data...</td></tr>';
+                } else {
+                    tableBody.innerHTML = '<tr><td colspan="8" class="empty">No scans match your filters.</td></tr>';
+                }
                 return;
             }
 
             tableBody.innerHTML = pageScans.map(scan => {
+                const recordId = numericRecordId(scan.id);
                 // Determine flag classes
                 const isUnknown = scan.part_id === 'UNKNOWN' || !scan.part_id;
                 const isShort = scan.serial_number && scan.serial_number.length < 5;
@@ -1766,21 +1908,20 @@
 
                 return `
                 <tr class="${rowClass}">
-                    <td class="timestamp">${formatDateTime(scan.created_at)}${flagBadge}</td>
-                    <td class="${serialClass}">${scan.serial_number || '-'}</td>
-                    <td class="${partClass}">${scan.part_id || '-'}</td>
-                    <td><span class="operator-badge">${scan.operator_name || '-'}</span></td>
-                    <td><span class="station-badge">${scan.station_id || '-'}</span></td>
-                    <td class="comment" title="${scan.batch_comment || ''}">${scan.batch_comment || ''}</td>
+                    <td class="timestamp">${escapeHtml(formatDateTime(scan.created_at))}${flagBadge}</td>
+                    <td class="${serialClass}">${escapeHtml(scan.serial_number || '-')}</td>
+                    <td class="${partClass}">${escapeHtml(scan.part_id || '-')}</td>
+                    <td><span class="operator-badge">${escapeHtml(scan.operator_name || '-')}</span></td>
+                    <td><span class="station-badge">${escapeHtml(scan.station_id || '-')}</span></td>
+                    <td class="comment" title="${escapeHtml(scan.batch_comment || '')}">${escapeHtml(scan.batch_comment || '')}</td>
                     <td class="notes-cell">
                         <div class="note-display" 
-                             data-id="${scan.id}" 
-                             onclick="editNote(this, ${scan.id})"
+                             ${recordId !== null ? `data-id="${recordId}" onclick="editNote(this, ${recordId})"` : ''}
                              title="Click to edit">${escapeHtml(scan.dashboard_notes || '')}</div>
                     </td>
                     <td>
-                        <button class="action-btn edit" onclick="openEditModal(${scan.id})">✏️ Edit</button>
-                        <button class="action-btn delete" onclick="openDeleteModal(${scan.id})">🗑️</button>
+                        ${recordId !== null ? `<button class="action-btn edit" onclick="openEditModal(${recordId})">✏️ Edit</button>
+                        <button class="action-btn delete" onclick="openDeleteModal(${recordId})">🗑️</button>` : ''}
                     </td>
                 </tr>
             `}).join('');
@@ -1788,9 +1929,15 @@
 
         // Escape HTML to prevent XSS
         function escapeHtml(text) {
-            const div = document.createElement('div');
-            div.textContent = text;
-            return div.innerHTML;
+            return String(text ?? '').replace(/[&<>"']/g, ch => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            })[ch]);
+        }
+
+        // Only canonical safe integers may be embedded in inline JS handlers.
+        function numericRecordId(value) {
+            const text = String(value);
+            return /^[1-9]\d*$/.test(text) && Number.isSafeInteger(Number(text)) ? Number(text) : null;
         }
 
         // Edit note inline
@@ -1964,8 +2111,8 @@
 
         // Export to CSV
         function exportCSV() {
-            if (filteredScans.length === 0) {
-                alert('No data to export');
+            if (!canExport() || filteredScans.length === 0) {
+                alert('Load a complete date range before exporting.');
                 return;
             }
 
@@ -1976,11 +2123,11 @@
                 scan.part_id || '',
                 scan.operator_name || '',
                 scan.station_id || '',
-                (scan.batch_comment || '').replace(/,/g, ';'), // Escape commas
-                (scan.dashboard_notes || '').replace(/,/g, ';') // Escape commas
+                scan.batch_comment || '',
+                scan.dashboard_notes || ''
             ]);
-
-            const csv = [headers.join(','), ...rows.map(r => r.map(c => `"${c}"`).join(','))].join('\n');
+            const quote = value => `"${String(value).replace(/"/g, '""')}"`;
+            const csv = [headers.map(quote).join(','), ...rows.map(r => r.map(quote).join(','))].join('\n');
 
             const blob = new Blob([csv], { type: 'text/csv' });
             const url = URL.createObjectURL(blob);
@@ -2018,6 +2165,7 @@
         const DASHBOARD_PASSWORD = 'PRI2025'; // Change this to your desired password
 
         function checkPassword() {
+            // Frontend convenience lock only: database access is governed by Supabase RLS.
             const input = document.getElementById('passwordInput');
             const error = document.getElementById('passwordError');
             const rememberMe = document.getElementById('rememberMe');
@@ -2046,20 +2194,35 @@
         // ===== EDIT MODAL FUNCTIONS =====
         let isEditMode = false;
 
-        function populateModalDropdowns() {
-            const operators = [...new Set(allScans.map(s => s.operator_name).filter(Boolean))].sort();
-            const stations = [...new Set(allScans.map(s => s.station_id).filter(Boolean))].sort();
+        async function populateModalDropdowns() {
+            let operators = [];
+            let stations = [];
+            try {
+                const [operatorResult, stationResult] = await Promise.all([
+                    supabaseClient.from('operators').select('name').eq('active', true).order('name'),
+                    supabaseClient.from('stations').select('name').eq('active', true).order('name')
+                ]);
+                if (operatorResult.error) throw operatorResult.error;
+                if (stationResult.error) throw stationResult.error;
+                operators = (operatorResult.data || []).map(row => row.name).filter(Boolean);
+                stations = (stationResult.data || []).map(row => row.name).filter(Boolean);
+            } catch (e) {
+                console.error('Configuration load error:', e);
+                alert('Could not load active operators and stations. Please refresh.');
+            }
 
             const opSelect = document.getElementById('editOperator');
             const stSelect = document.getElementById('editStation');
 
             opSelect.innerHTML = '<option value="">Select Operator</option>' +
-                operators.map(o => `<option value="${o}">${o}</option>`).join('');
+                operators.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
             stSelect.innerHTML = '<option value="">Select Station</option>' +
-                stations.map(s => `<option value="${s}">${s}</option>`).join('');
+                stations.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
         }
 
         function openEditModal(scanId) {
+            scanId = numericRecordId(scanId);
+            if (scanId === null) return;
             const scan = allScans.find(s => s.id === scanId);
             if (!scan) return;
 
@@ -2175,15 +2338,20 @@
 
         // ===== DELETE MODAL FUNCTIONS =====
         function openDeleteModal(scanId) {
+            scanId = numericRecordId(scanId);
+            if (scanId === null) return;
             const scan = allScans.find(s => s.id === scanId);
             if (!scan) return;
+            const deleteBtn = document.getElementById('confirmDeleteBtn');
+            deleteBtn.disabled = false;
+            deleteBtn.textContent = 'Delete';
 
             document.getElementById('deleteRecordId').value = scanId;
             document.getElementById('deleteInfo').innerHTML = `
-                <strong>Serial:</strong> ${scan.serial_number || '-'}<br>
-                <strong>Part:</strong> ${scan.part_id || '-'}<br>
-                <strong>Operator:</strong> ${scan.operator_name || '-'}<br>
-                <strong>Date:</strong> ${formatDateTime(scan.created_at)}
+                <strong>Serial:</strong> ${escapeHtml(scan.serial_number || '-')}<br>
+                <strong>Part:</strong> ${escapeHtml(scan.part_id || '-')}<br>
+                <strong>Operator:</strong> ${escapeHtml(scan.operator_name || '-')}<br>
+                <strong>Date:</strong> ${escapeHtml(formatDateTime(scan.created_at))}
             `;
 
             document.getElementById('deleteModal').style.display = 'flex';
@@ -2194,42 +2362,22 @@
         }
 
         async function confirmDelete() {
-            const recordId = document.getElementById('deleteRecordId').value;
+            const recordId = numericRecordId(document.getElementById('deleteRecordId').value);
+            if (recordId === null) return;
             const deleteBtn = document.getElementById('confirmDeleteBtn');
-
             deleteBtn.disabled = true;
             deleteBtn.textContent = 'Deleting...';
-
             try {
-                // Delete the scan record
-                // The ON DELETE CASCADE foreign key will automatically delete related serial_units
-                const { error: scansError } = await supabaseClient
-                    .from('scans')
-                    .delete()
-                    .eq('id', recordId);
-
-                if (scansError) {
-                    console.error('Delete error:', scansError);
-
-                    // Check if it's an RLS policy error
-                    if (scansError.code === '42501' || scansError.message?.includes('policy')) {
-                        alert('Permission denied. Please run the fix_delete_rls.sql script in Supabase to enable delete functionality.');
-                    } else {
-                        alert('Failed to delete record: ' + scansError.message);
-                    }
-
-                    deleteBtn.disabled = false;
-                    deleteBtn.textContent = 'Delete';
-                    return;
-                }
-
-                // Success!
+                const { error } = await supabaseClient.from('scans').delete().eq('id', recordId);
+                if (error) throw error;
                 closeDeleteModal();
                 await fetchScans();
-
             } catch (e) {
                 console.error('Delete error:', e);
-                alert('Something went wrong while deleting this record. Please refresh and try again.');
+                alert(e && (e.code === '42501' || String(e.message).includes('policy'))
+                    ? 'Permission denied. Check Supabase delete permissions.'
+                    : 'Failed to delete record: ' + (e.message || e));
+            } finally {
                 deleteBtn.disabled = false;
                 deleteBtn.textContent = 'Delete';
             }
@@ -2237,58 +2385,29 @@
 
         // Export to XLSX using SheetJS
         async function exportXLSX() {
-            if (filteredScans.length === 0) {
-                alert('No data to export');
+            if (!canExport() || filteredScans.length === 0) {
+                alert('Load a complete date range before exporting.');
                 return;
             }
-
-            // Load SheetJS dynamically if not loaded
             if (typeof XLSX === 'undefined') {
                 const script = document.createElement('script');
-                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
-                script.onload = () => doExport();
-                document.head.appendChild(script);
-            } else {
-                doExport();
+                script.src = '/tests/assets/xlsx.full.min.js';
+                await new Promise((resolve, reject) => { script.onload = resolve; script.onerror = reject; document.head.appendChild(script); });
             }
-
-            function doExport() {
-                // Prepare data
-                const data = filteredScans.map(scan => ({
-                    'Date/Time': formatDateTime(scan.created_at),
-                    'Serial Number': scan.serial_number || '',
-                    'Part Number': scan.part_id || '',
-                    'Operator': scan.operator_name || '',
-                    'Station': scan.station_id || '',
-                    'Comment': scan.batch_comment || '',
-                    'Notes': scan.dashboard_notes || ''
-                }));
-
-                // Create worksheet
-                const ws = XLSX.utils.json_to_sheet(data);
-
-                // Set column widths
-                ws['!cols'] = [
-                    { wch: 20 }, // Date/Time
-                    { wch: 18 }, // Serial Number
-                    { wch: 14 }, // Part Number
-                    { wch: 12 }, // Operator
-                    { wch: 10 }, // Station
-                    { wch: 30 }, // Comment
-                    { wch: 30 }  // Notes
-                ];
-
-                // Create workbook
-                const wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, 'Scans');
-
-                // Generate filename with date
-                const dateStr = new Date().toISOString().split('T')[0];
-                const filename = `PRI_Scans_${dateStr}.xlsx`;
-
-                // Download
-                XLSX.writeFile(wb, filename);
-            }
+            const data = filteredScans.map(scan => ({
+                'Date/Time': formatDateTime(scan.created_at),
+                'Serial Number': scan.serial_number || '',
+                'Part Number': scan.part_id || '',
+                'Operator': scan.operator_name || '',
+                'Station': scan.station_id || '',
+                'Comment': scan.batch_comment || '',
+                'Notes': scan.dashboard_notes || ''
+            }));
+            const ws = XLSX.utils.json_to_sheet(data);
+            ws['!cols'] = [{ wch: 20 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 10 }, { wch: 30 }, { wch: 30 }];
+            const wb = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(wb, ws, 'Scans');
+            XLSX.writeFile(wb, `PRI_Scans_${new Date().toISOString().split('T')[0]}.xlsx`);
         }
 
         // Initialize

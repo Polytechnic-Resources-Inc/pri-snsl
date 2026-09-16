@@ -95,8 +95,8 @@ async function runTests() {
     console.log('Running sync classification tests...\n');
 
     assertStatus({ httpStatus: 200 }, 'OK', '200 response is OK');
-    assertStatus({ httpStatus: 409 }, 'DUPLICATE', '409 response is duplicate until age is checked');
-    assertStatus({ httpStatus: 400, errorCode: '23505' }, 'DUPLICATE', 'Postgres 23505 is duplicate until age is checked');
+    assertStatus({ httpStatus: 409 }, 'BLOCKED', 'unclassified conflict cannot discard a queued scan');
+    assertStatus({ httpStatus: 400, errorCode: '23505' }, 'DUPLICATE', 'Postgres 23505 requires identity verification');
     assertStatus({ httpStatus: 401 }, 'BLOCKED', '401 response is blocked');
     assertStatus({ httpStatus: 403 }, 'BLOCKED', '403 response is blocked');
     assertStatus({ httpStatus: 403, errorCode: '42501' }, 'BLOCKED', 'Postgres 42501 is blocked');
@@ -107,39 +107,10 @@ async function runTests() {
     assertStatus({ timedOut: true, errorMessage: 'The operation was aborted' }, 'RETRYABLE', 'timeout is retryable');
     assertStatus({ networkError: true, errorMessage: 'Failed to fetch' }, 'RETRYABLE', 'network failure is retryable');
 
-    const now = Date.parse('2026-09-15T18:17:17.000Z');
-    const windowMs = 60000;
-
-    assertConflict(
-        { createdAt: '2026-09-15T18:17:13.925Z', nowMs: now, windowMs },
-        'OK',
-        'unique hit on a scan from 4s ago is already saved'
-    );
-    assertConflict(
-        { createdAt: '2026-09-15T17:17:11.210Z', nowMs: now, windowMs },
-        'DUPLICATE',
-        'unique hit on a scan from an hour ago stays duplicate'
-    );
-    assertConflict(
-        { createdAt: null, nowMs: now, windowMs },
-        'DUPLICATE',
-        'unique hit with no created_at stays duplicate'
-    );
-    assertConflict(
-        { createdAt: 'not-a-date', nowMs: now, windowMs },
-        'DUPLICATE',
-        'unique hit with unparsable created_at stays duplicate'
-    );
-    assertConflict(
-        { createdAt: '2026-09-15T18:16:17.000Z', nowMs: now, windowMs },
-        'OK',
-        'unique hit exactly at the 60s window is already saved'
-    );
-    assertConflict(
-        { createdAt: '2026-09-15T18:16:16.999Z', nowMs: now, windowMs },
-        'DUPLICATE',
-        'unique hit just outside the 60s window stays duplicate'
-    );
+    assertConflict({ existingScan: { idempotency_key: 'same' }, idempotencyKey: 'same' }, 'OK', 'same durable submission is saved');
+    assertConflict({ existingScan: { idempotency_key: 'other' }, idempotencyKey: 'mine' }, 'DUPLICATE', 'different submission is duplicate');
+    assertConflict({ existingScan: { idempotency_key: null }, idempotencyKey: 'mine' }, 'DUPLICATE', 'legacy existing record remains duplicate');
+    assertConflict({ existingScan: null, idempotencyKey: 'mine' }, 'RETRYABLE', 'unverified conflict remains queued');
 
     console.log('\n' + '='.repeat(50));
     console.log(`Tests Passed: ${passed}`);
