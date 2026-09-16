@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.7: Larger operator type + landscape 960px wrap / Last Scan 3-col
 // v8.8.6: Unique part+serial retry within 60s shows Saved, not Duplicate
 // v8.8.5: Non-blocking config load + 8s health/config timeouts + local config cache
 // v8.8.4: Reject UNKNOWN / recover truncated GS1-128 (missing leading 01) before insert
