@@ -16,3 +16,10 @@ __pycache__/
 nul
 .DS_Store
 Thumbs.db
+
+# Local verification tooling
+node_modules/
+test-results/
+playwright-report/
+.local-preview/
+

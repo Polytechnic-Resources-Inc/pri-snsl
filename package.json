@@ -1,0 +1,13 @@
+{
+  "name": "pri-snsl-local-verification",
+  "private": true,
+  "scripts": {
+    "test": "node tests/run-unit-tests.cjs",
+    "test:browser": "playwright test",
+    "preview:local": "node tests/local-preview.cjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.63.0",
+    "@supabase/supabase-js": "2.116.0"
+  }
+}

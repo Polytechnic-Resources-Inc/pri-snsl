@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.9: Durable retry identity, truthful queue feedback and offline/startup hardening
 // v8.8.7: Larger operator type + landscape 960px wrap / Last Scan 3-col
 // v8.8.6: Unique part+serial retry within 60s shows Saved, not Duplicate
 // v8.8.5: Non-blocking config load + 8s health/config timeouts + local config cache
@@ -522,7 +523,7 @@ function classifySyncResult(details = {}) {
         return makeSyncResult('OK', resultDetails);
     }
 
-    if (httpStatus === 409 || normalizedCode === '23505') {
+    if (normalizedCode === '23505') {
         return makeSyncResult('DUPLICATE', resultDetails);
     }
 
@@ -553,19 +554,12 @@ function classifySyncResult(details = {}) {
     return makeSyncResult('RETRYABLE', resultDetails);
 }
 
-const EXISTING_SCAN_CONFLICT_WINDOW_MS = 60000;
-
+// Only the same durable submission is an idempotent retry. Time is not identity.
 function classifyExistingScanConflict(details = {}) {
-    const windowMs = Number.isFinite(details.windowMs) ? details.windowMs : EXISTING_SCAN_CONFLICT_WINDOW_MS;
-    const nowMs = Number.isFinite(details.nowMs) ? details.nowMs : Date.now();
-    const createdMs = Date.parse(details.createdAt);
-    if (!Number.isFinite(createdMs)) {
-        return 'DUPLICATE';
-    }
-    if ((nowMs - createdMs) <= windowMs) {
-        return 'OK';
-    }
-    return 'DUPLICATE';
+    const existing = details.existingScan;
+    if (!existing) return 'RETRYABLE';
+    return details.idempotencyKey && existing.idempotency_key === details.idempotencyKey
+        ? 'OK' : 'DUPLICATE';
 }
 
 /**
@@ -621,9 +615,9 @@ async function queueScan(payload, idempotencyKey) {
             lastErrorMessage: ''
         };
 
-        const request = store.put(record);
-        request.onsuccess = () => resolve(record);
-        request.onerror = () => reject(request.error);
+        store.put(record);
+        tx.oncomplete = () => resolve(record);
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('Local scan storage failed'));
     });
 }
 
@@ -636,9 +630,9 @@ async function dequeueScan(idempotencyKey) {
     return new Promise((resolve, reject) => {
         const tx = queueDb.transaction(QUEUE_STORE_NAME, 'readwrite');
         const store = tx.objectStore(QUEUE_STORE_NAME);
-        const request = store.delete(idempotencyKey);
-        request.onsuccess = () => resolve();
-        request.onerror = () => reject(request.error);
+        store.delete(idempotencyKey);
+        tx.oncomplete = () => resolve();
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('Queue removal failed'));
     });
 }
 
@@ -647,26 +641,19 @@ async function dequeueScan(idempotencyKey) {
  */
 async function updateQueuedScan(idempotencyKey, updates) {
     if (!queueDb) await initOfflineQueue();
-
     return new Promise((resolve, reject) => {
         const tx = queueDb.transaction(QUEUE_STORE_NAME, 'readwrite');
         const store = tx.objectStore(QUEUE_STORE_NAME);
-        const getRequest = store.get(idempotencyKey);
-
-        getRequest.onsuccess = () => {
-            const existing = getRequest.result;
-            if (!existing) {
-                resolve(null);
-                return;
+        let updated = null;
+        const request = store.get(idempotencyKey);
+        request.onsuccess = () => {
+            if (request.result) {
+                updated = { ...request.result, ...updates };
+                store.put(updated);
             }
-
-            const updated = { ...existing, ...updates };
-            const putRequest = store.put(updated);
-            putRequest.onsuccess = () => resolve(updated);
-            putRequest.onerror = () => reject(putRequest.error);
         };
-
-        getRequest.onerror = () => reject(getRequest.error);
+        tx.oncomplete = () => resolve(updated);
+        tx.onerror = tx.onabort = () => reject(tx.error || new Error('Queue update failed'));
     });
 }
 
@@ -757,6 +744,7 @@ async function flushQueue() {
                 const result = await syncScanToSupabase(record.payload, record.idempotencyKey);
                 if (result.status === 'OK' || result.status === 'DUPLICATE') {
                     await dequeueScan(record.idempotencyKey);
+                    reconcileQueuedScan(record, result.status);
                     updateLastSyncTime(); // Track successful sync
                     successCount++;
                     console.log(`✅ Synced: ${record.payload.serial_number}`);
@@ -796,10 +784,10 @@ async function flushQueue() {
  * Direct sync to Supabase (used by queue flush)
  * Now with explicit timeout to prevent hanging
  */
-async function lookupExistingScanCreatedAt(partId, serialNumber) {
+async function lookupExistingScan(partId, serialNumber) {
     if (!partId || !serialNumber) return null;
     const params = new URLSearchParams({
-        select: 'created_at',
+        select: 'idempotency_key',
         part_id: `eq.${partId}`,
         serial_number: `eq.${serialNumber}`,
         limit: '1'
@@ -818,7 +806,7 @@ async function lookupExistingScanCreatedAt(partId, serialNumber) {
         if (!response.ok) return null;
         const rows = await response.json().catch(() => []);
         if (!Array.isArray(rows) || rows.length === 0) return null;
-        return rows[0].created_at || null;
+        return rows[0];
     } catch (e) {
         return null;
     } finally {
@@ -869,12 +857,8 @@ async function syncScanToSupabase(payload, idempotencyKey) {
         });
 
         if (classified.status === 'DUPLICATE') {
-            const existingCreatedAt = await lookupExistingScanCreatedAt(
-                payload.part_number,
-                payload.serial_number
-            );
-            const ageStatus = classifyExistingScanConflict({ createdAt: existingCreatedAt });
-            return makeSyncResult(ageStatus, classified);
+            const existingScan = await lookupExistingScan(payload.part_number, payload.serial_number);
+            return makeSyncResult(classifyExistingScanConflict({ existingScan, idempotencyKey }), classified);
         }
 
         return classified;
@@ -1032,43 +1016,26 @@ function initClock() {
  * Fetches Config (Operators, Stations, Part Map) from Supabase.
  */
 async function fetchConfig() {
-    console.log('🔄 Fetching config from Supabase...');
+    const controller = new AbortController();
     try {
-        await withTimeout((async () => {
-            const { data: opsData, error: opsError } = await supabaseClient
-                .from('operators')
-                .select('name')
-                .eq('active', true)
-                .order('name');
-            if (opsError) throw opsError;
-            if (opsData) OPERATORS_LIST = opsData.map(o => o.name);
-
-            const { data: stData, error: stError } = await supabaseClient
-                .from('stations')
-                .select('name')
-                .eq('active', true)
-                .order('name');
-            if (stError) throw stError;
-            if (stData) STATIONS_LIST = stData.map(s => s.name);
-
-            const { data: pmData, error: pmError } = await supabaseClient
-                .from('part_map')
-                .select('barcode_prefix, part_number')
-                .eq('active', true);
-            if (pmError) throw pmError;
-            if (pmData) {
-                PART_NUMBER_MAP = {};
-                pmData.forEach(row => {
-                    PART_NUMBER_MAP[row.barcode_prefix] = row.part_number;
-                });
-            }
-        })(), CONFIG_FETCH_TIMEOUT_MS);
-
+        // Gather into temporary values: a timeout/error must not partially replace the cache.
+        const results = await withTimeout(Promise.all([
+            supabaseClient.from('operators').select('name').eq('active', true).order('name').abortSignal(controller.signal),
+            supabaseClient.from('stations').select('name').eq('active', true).order('name').abortSignal(controller.signal),
+            supabaseClient.from('part_map').select('barcode_prefix, part_number').eq('active', true).abortSignal(controller.signal)
+        ]), CONFIG_FETCH_TIMEOUT_MS);
+        for (const result of results) {
+            if (result.error) throw result.error;
+            if (!Array.isArray(result.data)) throw new Error('Incomplete configuration');
+        }
+        OPERATORS_LIST = results[0].data.map(row => row.name);
+        STATIONS_LIST = results[1].data.map(row => row.name);
+        PART_NUMBER_MAP = Object.fromEntries(results[2].data.map(row => [row.barcode_prefix, row.part_number]));
         saveConfigCache();
-        console.log(`✅ Loaded ${OPERATORS_LIST.length} operators, ${STATIONS_LIST.length} stations, ${Object.keys(PART_NUMBER_MAP).length} part mappings`);
         return true;
     } catch (e) {
-        console.error('Config fetch error:', e);
+        controller.abort();
+        console.warn('Configuration unavailable; retaining cached setup:', e);
         return false;
     }
 }
@@ -1297,12 +1264,17 @@ function restoreLockStates() {
         generalNote.value = savedBatchComment;
     }
 
-    // Restore operator/station lock state
-    if (operatorLocked) {
+    // Never lock empty/removed selections after a configuration refresh.
+    if (operatorLocked && hasScanSetup()) {
         operatorInput.disabled = true;
         stationSel.disabled = true;
         lockBtn.style.display = 'none';
         unlockBtn.style.display = 'inline-flex';
+    } else {
+        operatorInput.disabled = false;
+        stationSel.disabled = false;
+        lockBtn.style.display = 'inline-flex';
+        unlockBtn.style.display = 'none';
     }
 
     // Restore batch comment lock state
@@ -1654,11 +1626,15 @@ function getLastScanKey() {
     return `lastScan_${op}_${st}`;
 }
 
-function saveLastScan(part, serial, status) {
-    const key = getLastScanKey();
-    const scanData = { part, serial, status, timestamp: new Date().toISOString() };
-    localStorage.setItem(key, JSON.stringify(scanData));
-    updateLastScanDisplay(scanData);
+function scanStatusLabel(status) {
+    return ({ OK: 'Saved', QUEUED: 'Queued', DUPLICATE: 'Duplicate', ERROR: 'Not saved', ERR: 'Not saved' })[status] || status || '';
+}
+
+function saveLastScan(part, serial, status, idempotencyKey, operator = operatorInput.value, station = stationSel.value) {
+    const key = `lastScan_${operator}_${station}`;
+    const scanData = { part, serial, status, idempotencyKey, timestamp: new Date().toISOString() };
+    try { localStorage.setItem(key, JSON.stringify(scanData)); } catch (e) { console.warn('Last scan display cache unavailable:', e); }
+    if (key === getLastScanKey()) updateLastScanDisplay(scanData);
 }
 
 function updateLastScanDisplay(data) {
@@ -1673,7 +1649,7 @@ function updateLastScanDisplay(data) {
 
     lastPart.textContent = data.part || '—';
     lastSerial.textContent = data.serial || '—';
-    lastScanStatus.textContent = data.status || '';
+    lastScanStatus.textContent = scanStatusLabel(data.status);
 
     // Status styling
     if (data.status === 'OK') {
@@ -1702,99 +1678,50 @@ function updateLastScanDisplay(data) {
  */
 async function loadLastScan() {
     const key = getLastScanKey();
+    const op = operatorInput.value;
+    const st = stationSel.value;
+    const startedAt = Date.now();
     let mostRecent = null;
-    let mostRecentTime = 0;
-
-    // Source 1: localStorage (previous sessions)
-    const stored = localStorage.getItem(key);
-    if (stored) {
-        try {
-            const data = JSON.parse(stored);
-            if (data.timestamp) {
-                const storedTime = new Date(data.timestamp).getTime();
-                if (storedTime > mostRecentTime) {
-                    mostRecent = data;
-                    mostRecentTime = storedTime;
-                }
-            }
-        } catch (e) {
-            console.warn('Failed to parse stored last scan:', e);
-        }
-    }
-
-    // Source 2: Queued scans (offline scans)
+    const consider = data => {
+        if (data && (!mostRecent || Date.parse(data.timestamp) > Date.parse(mostRecent.timestamp))) mostRecent = data;
+    };
+    try { consider(JSON.parse(localStorage.getItem(key) || 'null')); } catch (e) { /* Optional display cache. */ }
     try {
         const pending = await getPendingScans();
-        const currentOp = operatorInput.value || 'UNNAMED';
-        const currentSt = stationSel.value || 'MAIN';
-
-        // Filter queued scans for current operator/station
-        const myQueuedScans = pending.filter(q =>
-            q.payload.operator === currentOp && q.payload.station === currentSt
-        );
-
-        if (myQueuedScans.length > 0) {
-            // Get the most recent queued scan
-            const latestQueued = myQueuedScans[myQueuedScans.length - 1]; // Last in array = most recent
-            const queuedTime = latestQueued.timestamp || Date.now();
-
-            if (queuedTime > mostRecentTime) {
-                mostRecent = {
-                    part: latestQueued.payload.part_number,
-                    serial: latestQueued.payload.serial_number,
-                    status: 'QUEUED',
-                    timestamp: new Date(queuedTime).toISOString()
-                };
-                mostRecentTime = queuedTime;
-            }
+        for (const row of pending) {
+            if (row.payload.operator === op && row.payload.station === st) consider({
+                part: row.payload.part_number, serial: row.payload.serial_number, status: 'QUEUED',
+                idempotencyKey: row.idempotencyKey, timestamp: new Date(row.timestamp).toISOString()
+            });
         }
-    } catch (e) {
-        console.warn('Failed to check queued scans for last scan:', e);
-    }
-
-    // Source 3: Supabase (cloud database) - only if online
-    if (navigator.onLine && typeof getConnectivityStatus === 'function') {
-        const connectivity = getConnectivityStatus();
-        if (connectivity.supabaseReachable !== false) {
-            try {
-                const currentOp = operatorInput.value || 'UNNAMED';
-                const currentSt = stationSel.value || 'MAIN';
-
-                const { data, error } = await supabaseClient
-                    .from('scans')
-                    .select('part_id, serial_number, created_at')
-                    .eq('operator_name', currentOp)
-                    .eq('station_id', currentSt)
-                    .order('created_at', { ascending: false })
-                    .limit(1);
-
-                if (!error && data && data.length > 0) {
-                    const dbScan = data[0];
-                    const dbTime = new Date(dbScan.created_at).getTime();
-
-                    if (dbTime > mostRecentTime) {
-                        mostRecent = {
-                            part: dbScan.part_id,
-                            serial: dbScan.serial_number,
-                            status: 'OK', // From database = synced
-                            timestamp: dbScan.created_at
-                        };
-                        mostRecentTime = dbTime;
-                    }
-                }
-            } catch (e) {
-                console.warn('Failed to fetch last scan from Supabase:', e);
-            }
-        }
-    }
-
-    // Update display with the most recent across all sources
+    } catch (e) { console.warn('Cannot restore queued preview:', e); }
+    if (key !== getLastScanKey() || isProcessing) return;
+    // Show local state now, before waiting on any network request.
     updateLastScanDisplay(mostRecent);
-
-    // Save to localStorage for next time
-    if (mostRecent) {
-        localStorage.setItem(key, JSON.stringify(mostRecent));
+    if (navigator.onLine && op && st &&
+        (typeof getConnectivityStatus !== 'function' || getConnectivityStatus().supabaseReachable !== false)) {
+        try {
+            const { data, error } = await withTimeout(supabaseClient.from('scans')
+                .select('part_id, serial_number, created_at, idempotency_key')
+                .eq('operator_name', op).eq('station_id', st).order('created_at', { ascending: false }).limit(1), 8000);
+            if (!error && data?.length) {
+                const row = data[0];
+                // A cloud confirmation of the same submission wins over its local Queued label.
+                if (mostRecent?.idempotencyKey && row.idempotency_key === mostRecent.idempotencyKey) mostRecent.status = 'OK';
+                else consider({ part: row.part_id, serial: row.serial_number, status: 'OK',
+                    timestamp: row.created_at, idempotencyKey: row.idempotency_key });
+            }
+        } catch (e) { console.warn('Cloud last scan unavailable:', e); }
     }
+    if (key !== getLastScanKey() || isProcessing) return;
+    try {
+        const latest = JSON.parse(localStorage.getItem(key) || 'null');
+        // A scan or queue reconciliation completed while this request was waiting.
+        if (latest && (Date.parse(latest.timestamp) >= startedAt ||
+            (latest.idempotencyKey && latest.idempotencyKey === mostRecent?.idempotencyKey && latest.status !== 'QUEUED'))) mostRecent = latest;
+        if (mostRecent) localStorage.setItem(key, JSON.stringify(mostRecent));
+    } catch (e) { /* Display still works without localStorage. */ }
+    updateLastScanDisplay(mostRecent);
 }
 
 // Update relative time every 30 seconds
@@ -1822,50 +1749,73 @@ let currentHistory = [];
 async function fetchHistory() {
     const op = operatorInput.value;
     const st = stationSel.value;
-
     if (!op || !st) {
         historyPanel.innerHTML = '<div style="padding:12px;color:#888">Select Operator and Station to view history.</div>';
         return;
     }
-
-    // Loading indicator
-    const loadLabel = document.createElement('div');
-    loadLabel.textContent = 'Refreshing history...';
-    loadLabel.style.padding = '12px';
-    loadLabel.style.color = '#aa';
-    historyPanel.innerHTML = '';
-    historyPanel.appendChild(loadLabel);
-
-    try {
-        const { data, error } = await supabaseClient
-            .from('scans')
-            .select('*')
-            .eq('operator_name', op)
-            .eq('station_id', st)
-            .order('created_at', { ascending: false })
-            .limit(50);
-
-        if (error) throw error;
-
-        if (data) {
-            currentHistory = data.map(row => ({
-                part: row.part_id,
-                serial: row.serial_number,
-                status: 'OK', // Records in DB are by definition successful
-                timestamp: row.created_at
-            }));
-            renderHistory();
+    const selected = () => operatorInput.value === op && stationSel.value === st;
+    const merge = (rows) => {
+        const byKey = new Map();
+        // Local attempts retain immediate feedback; confirmed server rows replace queued copies.
+        for (const item of [...currentHistory.filter(item => item.operator === op && item.station === st), ...rows]) {
+            const key = item.idempotencyKey || `${item.part}|${item.serial}|${item.timestamp}`;
+            byKey.set(key, item);
         }
+        currentHistory = [...byKey.values()].sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp)).slice(0, 50);
+        renderHistory();
+    };
+    try {
+        const pending = await getPendingScans();
+        if (!selected()) return;
+        merge(pending.filter(row => row.payload.operator === op && row.payload.station === st).map(row => ({
+            idempotencyKey: row.idempotencyKey, operator: op, station: st,
+            part: row.payload.part_number, serial: row.payload.serial_number,
+            status: 'QUEUED', timestamp: new Date(row.timestamp).toISOString()
+        })));
+        if (!navigator.onLine) return;
+        if (typeof getConnectivityStatus === 'function' && getConnectivityStatus().supabaseReachable === false) return;
+        const { data, error } = await withTimeout(supabaseClient.from('scans').select('*')
+            .eq('operator_name', op).eq('station_id', st).order('created_at', { ascending: false }).limit(50), 8000);
+        if (error) throw error;
+        if (!selected()) return;
+        merge((data || []).map(row => ({
+            idempotencyKey: row.idempotency_key, operator: op, station: st,
+            part: row.part_id, serial: row.serial_number, status: 'OK', timestamp: row.created_at
+        })));
     } catch (e) {
-        console.error('History Error:', e);
-        historyPanel.innerHTML = '<div style="padding:12px;color:var(--error)">Error loading history.</div>';
+        console.warn('History unavailable; keeping local scans:', e);
+        if (selected() && !currentHistory.length) historyPanel.textContent = 'History unavailable. New scans still appear here.';
     }
+}
+
+function reconcileQueuedScan(record, status) {
+    const { operator, station, part_number: part, serial_number: serial } = record.payload;
+    if (operator === operatorInput.value && station === stationSel.value) {
+        const existing = currentHistory.find(item => item.idempotencyKey === record.idempotencyKey);
+        addToHistory({ ...existing, idempotencyKey: record.idempotencyKey, operator, station,
+            part, serial, status, timestamp: existing?.timestamp || new Date(record.timestamp).toISOString() });
+    }
+    const key = `lastScan_${operator}_${station}`;
+    try {
+        const stored = JSON.parse(localStorage.getItem(key) || 'null');
+        const matches = stored && (stored.idempotencyKey === record.idempotencyKey ||
+            (!stored.idempotencyKey && stored.status === 'QUEUED' && stored.part === part && stored.serial === serial));
+        if (matches) {
+            stored.status = status;
+            stored.idempotencyKey = record.idempotencyKey;
+            localStorage.setItem(key, JSON.stringify(stored));
+            if (key === getLastScanKey() && !isProcessing) updateLastScanDisplay(stored);
+        }
+    } catch (e) { console.warn('Last scan reconciliation unavailable:', e); }
 }
 
 // Just updates the local view optimistically (for immediate feedback)
 // The actual source of truth is Supabase, which we can refresh.
 function addToHistory(item) {
+    if (item.operator !== operatorInput.value || item.station !== stationSel.value) return;
+    if (item.idempotencyKey) currentHistory = currentHistory.filter(row => row.idempotencyKey !== item.idempotencyKey);
     currentHistory.unshift(item);
+    currentHistory = currentHistory.slice(0, 50);
     renderHistory();
 }
 
@@ -1883,13 +1833,15 @@ function renderHistory() {
         // Status Logic
         let statusClass = (item.status || 'OK').toLowerCase();
         if (statusClass.includes('dup')) statusClass = 'dup';
-        else if (statusClass.includes('err') || statusClass.includes('off') || statusClass.includes('queued')) statusClass = 'queued';
+        else if (statusClass.includes('err')) statusClass = 'error';
+        else if (statusClass.includes('off') || statusClass.includes('queued')) statusClass = 'queued';
         else statusClass = 'ok';
 
         let badgeStyle = '';
         if (statusClass === 'ok') badgeStyle = 'background:#d1fae5; color:#065f46;';
         if (statusClass === 'dup') badgeStyle = 'background:#fef3c7; color:#92400e;';
         if (statusClass === 'queued') badgeStyle = 'background:#dbeafe; color:#1e40af;';
+        if (statusClass === 'error') badgeStyle = 'background:#fee2e2; color:#991b1b;';
 
         const partCol = document.createElement('div');
         partCol.className = 'scan-data-col';
@@ -1905,7 +1857,7 @@ function renderHistory() {
         statusCol.className = 'scan-data-col';
         statusCol.innerHTML = '<div class="data-label">Status</div><div class="history-status"></div><div class="history-time"></div>';
         const statusEl = statusCol.querySelector('.history-status');
-        statusEl.textContent = item.status || 'OK';
+        statusEl.textContent = scanStatusLabel(item.status || 'OK');
         statusEl.style.cssText = badgeStyle;
         statusCol.querySelector('.history-time').textContent = formatTimestamp(item.timestamp);
 
@@ -1949,9 +1901,7 @@ window.addEventListener('offline', () => {
 // 2. Queue locally FIRST (guaranteed persistence)
 // 3. Attempt immediate sync ONLY if Supabase is reachable
 // 4. Return status for UI feedback
-async function send(payload) {
-    // Generate idempotency key: serial + station + timestamp
-    const idempotencyKey = `${payload.serial_number}-${payload.station}-${Date.now()}`;
+async function send(payload, idempotencyKey = crypto.randomUUID()) {
     let queuedRecord = null;
 
     // Always queue locally first (guarantees no scan loss)
@@ -1969,7 +1919,7 @@ async function send(payload) {
     // Check internet connectivity
     if (!navigator.onLine) {
         console.log('📶 No internet - scan queued');
-        return 'QUEUED';
+        return queuedRecord ? 'QUEUED' : 'ERROR';
     }
 
     // Check Supabase reachability (if health check is available)
@@ -1978,7 +1928,7 @@ async function send(payload) {
         const status = getConnectivityStatus();
         if (status.supabaseReachable === false) {
             console.log('☁️ Supabase unreachable - scan queued');
-            return 'QUEUED';
+            return queuedRecord ? 'QUEUED' : 'ERROR';
         }
         supabaseReachable = status.supabaseReachable;
     }
@@ -2007,7 +1957,7 @@ async function send(payload) {
                     updateQueueUI();
                 }
                 console.warn('⚠️ Sync failed - scan queued');
-                return 'QUEUED';
+                return queuedRecord ? 'QUEUED' : 'ERROR';
             }
         } catch (e) {
             if (queuedRecord) {
@@ -2016,17 +1966,65 @@ async function send(payload) {
                 updateQueueUI();
             }
             console.error('Sync error:', e);
-            return 'QUEUED';
+            return queuedRecord ? 'QUEUED' : 'ERROR';
         }
     }
 
     // Supabase not reachable - scan is queued
-    return 'QUEUED';
+    return queuedRecord ? 'QUEUED' : 'ERROR';
 }
 
 // Scan lock to prevent double-scanning
 let isProcessing = false;
 let processingTimeout = null;
+
+function hasScanSetup() {
+    return OPERATORS_LIST.includes(operatorInput.value) && STATIONS_LIST.includes(stationSel.value);
+}
+
+function updateScannerReadiness() {
+    const ready = hasScanSetup() && !isProcessing;
+    scanInput.disabled = !ready;
+    scanInput.classList.toggle('ready', ready);
+    scanInput.placeholder = ready ? '✅ Ready to scan'
+        : isProcessing ? 'Saving scan...'
+        : !OPERATORS_LIST.length || !STATIONS_LIST.length ? 'Loading setup — please wait'
+        : 'Select your operator and station';
+    lockBtn.disabled = !hasScanSetup();
+}
+
+let configRetryTimer = null;
+let refreshingConfig = false;
+async function refreshConfig() {
+    if (refreshingConfig) return;
+    clearTimeout(configRetryTimer);
+    if (isProcessing) {
+        configRetryTimer = setTimeout(refreshConfig, 1000);
+        return;
+    }
+    refreshingConfig = true;
+    const ok = await fetchConfig();
+    refreshingConfig = false;
+    if (ok && !isProcessing) {
+        populateOperators();
+        populateStations();
+        // Do not restore batch text here: the operator may have typed since startup.
+        if (!hasScanSetup()) {
+            operatorInput.disabled = stationSel.disabled = false;
+            lockBtn.style.display = 'inline-flex';
+            unlockBtn.style.display = 'none';
+        } else if (localStorage.getItem('operatorLocked') === 'true') {
+            operatorInput.disabled = stationSel.disabled = true;
+            lockBtn.style.display = 'none';
+            unlockBtn.style.display = 'inline-flex';
+        }
+        updateScannerReadiness();
+        fetchHistory();
+        loadLastScan().catch(err => console.warn('Last scan unavailable:', err));
+    } else {
+        configRetryTimer = setTimeout(refreshConfig, ok ? 1000 : 10000);
+    }
+}
 
 function unlockScanner() {
     if (processingTimeout) {
@@ -2034,9 +2032,9 @@ function unlockScanner() {
         processingTimeout = null;
     }
     isProcessing = false;
-    scanInput.disabled = false;
     scanInput.style.opacity = '1';
-    scanInput.focus();
+    updateScannerReadiness();
+    if (!scanInput.disabled) scanInput.focus();
 }
 
 scanInput.addEventListener('keydown', async (ev) => {
@@ -2044,6 +2042,12 @@ scanInput.addEventListener('keydown', async (ev) => {
     if (isProcessing) {
         console.log('⚠️ Scan blocked: Already processing');
         playSoundError();
+        return;
+    }
+
+    if (!hasScanSetup()) {
+        show('Select your operator and station before scanning', 'err');
+        updateScannerReadiness();
         return;
     }
 
@@ -2123,7 +2127,7 @@ scanInput.addEventListener('keydown', async (ev) => {
     // ===== CLIENT-SIDE DUPLICATE CHECK (v8.8.2) =====
     // Check if this serial was recently scanned by the same operator
     // Works both online AND offline - prevents double-scans in a session
-    const currentOperator = operatorInput.value || 'UNNAMED';
+    const currentOperator = operatorInput.value;
     console.log('🔍 Checking duplicate for operator:', currentOperator, 'serial:', cleanedSerial); // Debug
     if (typeof isDuplicateScan === 'function' && isDuplicateScan(currentOperator, cleanedSerial)) {
         console.log('⚠️ Duplicate detected - blocking scan'); // Debug
@@ -2169,9 +2173,10 @@ scanInput.addEventListener('keydown', async (ev) => {
             batch_comment: $('#generalNote').value || '' // Capture Batch Comment
         };
 
-        const status = await send(payload);
+        const idempotencyKey = crypto.randomUUID();
+        const status = await send(payload, idempotencyKey);
 
-        lastScanStatus.textContent = status;
+        lastScanStatus.textContent = scanStatusLabel(status);
 
         if (status === 'OK') {
             lastScanStatus.style.cssText = 'background:#d1fae5; color:#065f46;';
@@ -2200,13 +2205,16 @@ scanInput.addEventListener('keydown', async (ev) => {
             }
         } else {
             lastScanStatus.style.cssText = 'background:#fee2e2; color:#991b1b;';
-            lastScanStatus.textContent = 'ERROR';
+            lastScanStatus.textContent = 'Not saved';
             playSoundError();
-            show('❌ ERROR', 'err');
+            show('❌ NOT SAVED — retry once or ask a supervisor', 'err');
         }
 
-        saveLastScan(cleanedPart, cleanedSerial, status);
+        saveLastScan(cleanedPart, cleanedSerial, status, idempotencyKey, payload.operator, payload.station);
         addToHistory({
+            idempotencyKey,
+            operator: payload.operator,
+            station: payload.station,
             part: cleanedPart,
             serial: cleanedSerial,
             status: status,
@@ -2217,7 +2225,7 @@ scanInput.addEventListener('keydown', async (ev) => {
         console.error(e);
         lastScanStatus.textContent = 'ERR';
         playSoundError();
-        show('❌ ERROR', 'err');
+        show('❌ NOT SAVED — retry once or ask a supervisor', 'err');
     } finally {
         unlockScanner();
     }
@@ -2265,70 +2273,16 @@ async function initApp() {
     populateStations();
     restoreLockStates();
 
-    scanInput.disabled = false;
-    scanInput.classList.add('ready');
-    scanInput.placeholder = '✅ Ready to scan';
-
-    fetchConfig()
-        .then((ok) => {
-            if (ok) {
-                populateOperators();
-                populateStations();
-                restoreLockStates();
-            }
-        })
-        .catch((err) => console.warn('Background config fetch failed:', err));
+    updateScannerReadiness();
+    refreshConfig();
 
     loadLastScan().catch(err => console.warn('Failed to load last scan:', err));
     fetchHistory();
 
-    // Register Service Worker for PWA caching (v8.8.2 enhanced)
+    // Browser-managed updates: never force-reload a tablet while scanning.
     if ('serviceWorker' in navigator) {
         navigator.serviceWorker.register('./service-worker.js')
-            .then(reg => {
-                console.log('📦 Service Worker registered:', reg.scope);
-
-                // Listen for service worker updates
-                reg.addEventListener('updatefound', () => {
-                    const newWorker = reg.installing;
-                    console.log('🔄 New service worker found, installing...');
-
-                    newWorker.addEventListener('statechange', () => {
-                        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
-                            // New service worker is ready, waiting to activate
-                            console.log('✅ New service worker ready, will reload page');
-
-                            // Show a brief notification to user
-                            showUpdateNotification();
-
-                            // Automatically reload after 2 seconds to get the update
-                            setTimeout(() => {
-                                // Tell the new service worker to skip waiting and become active
-                                newWorker.postMessage({ type: 'SKIP_WAITING' });
-                            }, 1500);
-
-                            // Wait for the new worker to activate, then reload
-                            newWorker.addEventListener('controllerchange', () => {
-                                console.log('✅ New service worker activated, reloading page');
-                                window.location.reload();
-                            });
-                        }
-                    });
-                });
-
-                // Listen for messages from service worker
-                navigator.serviceWorker.addEventListener('message', event => {
-                    if (event.data && event.data.type === 'SERVICE_WORKER_UPDATE') {
-                        console.log(`📢 Service worker update available: ${event.data.version}`);
-
-                        // Show notification and reload immediately
-                        showUpdateNotification();
-                        // Force reload to get the new version
-                        window.location.reload();
-                    }
-                });
-            })
-            .catch(err => console.error('❌ Service Worker registration failed:', err));
+            .catch(err => console.warn('Offline shell registration failed:', err));
     }
 
     console.log('🚀 App initialized');
@@ -2346,17 +2300,20 @@ initApp();
 // Refresh history when user changes Operator or Station
 operatorInput.addEventListener('change', async () => {
     savePrefs();
+    updateScannerReadiness();
     fetchHistory();
     await loadLastScan(); // v8.8.2: Reload last scan when operator changes
 });
 
 stationSel.addEventListener('change', async () => {
     savePrefs();
+    updateScannerReadiness();
     fetchHistory();
     await loadLastScan(); // v8.8.2: Reload last scan when station changes
 });
 
 lockBtn.addEventListener('click', () => {
+    if (!hasScanSetup()) return;
     operatorInput.disabled = true;
     stationSel.disabled = true;
     lockBtn.style.display = 'none';
