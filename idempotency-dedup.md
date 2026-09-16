@@ -4,7 +4,7 @@
 
 This document describes how the scanner prevents obvious repeat scans and how queued scans are retried without changing production scanning behavior.
 
-Current scanner version: `v8.8.5`.
+Current scanner version: `v8.8.6`.
 
 Runtime sources:
 
@@ -126,8 +126,8 @@ Every accepted scan is queued before network sync is attempted.
 
 | Internal result | Cause | Queue behavior | User-facing result |
 |---|---|---|---|
-| `OK` | Supabase returned 2xx | Remove queued record | `OK` / `SAVED` |
-| `DUPLICATE` | HTTP 409 or Postgres `23505` | Remove queued record | `DUPLICATE` |
+| `OK` | Supabase returned 2xx, or unique part+serial conflict on a row created in the last 60 seconds | Remove queued record | `OK` / `SAVED` |
+| `DUPLICATE` | Unique part+serial conflict on an older row, or 409/23505 with no readable created_at | Remove queued record | `DUPLICATE` |
 | `RETRYABLE` | Timeout, network error, HTTP 408, 429, 5xx, or unknown transient failure | Keep queued record and update retry metadata | `QUEUED` |
 | `BLOCKED` | Auth, RLS, policy, permission, 400, 401, 403, 422, or other non-retryable 4xx | Keep queued record and update retry metadata | `QUEUED` |
 

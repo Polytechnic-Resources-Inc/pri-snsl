@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.6: Unique part+serial retry within 60s shows Saved, not Duplicate
 // v8.8.5: Non-blocking config load + 8s health/config timeouts + local config cache
 // v8.8.4: Reject UNKNOWN / recover truncated GS1-128 (missing leading 01) before insert
 // v8.8.3: Hotfix - Added '757E2' to HIBC_MAX_TRAILING_BEFORE_STRIP (5-digit serial preservation)
@@ -551,6 +552,21 @@ function classifySyncResult(details = {}) {
     return makeSyncResult('RETRYABLE', resultDetails);
 }
 
+const EXISTING_SCAN_CONFLICT_WINDOW_MS = 60000;
+
+function classifyExistingScanConflict(details = {}) {
+    const windowMs = Number.isFinite(details.windowMs) ? details.windowMs : EXISTING_SCAN_CONFLICT_WINDOW_MS;
+    const nowMs = Number.isFinite(details.nowMs) ? details.nowMs : Date.now();
+    const createdMs = Date.parse(details.createdAt);
+    if (!Number.isFinite(createdMs)) {
+        return 'DUPLICATE';
+    }
+    if ((nowMs - createdMs) <= windowMs) {
+        return 'OK';
+    }
+    return 'DUPLICATE';
+}
+
 /**
  * Initialize IndexedDB for offline queue
  */
@@ -779,6 +795,36 @@ async function flushQueue() {
  * Direct sync to Supabase (used by queue flush)
  * Now with explicit timeout to prevent hanging
  */
+async function lookupExistingScanCreatedAt(partId, serialNumber) {
+    if (!partId || !serialNumber) return null;
+    const params = new URLSearchParams({
+        select: 'created_at',
+        part_id: `eq.${partId}`,
+        serial_number: `eq.${serialNumber}`,
+        limit: '1'
+    });
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    try {
+        const response = await fetch(`${SUPABASE_URL}/rest/v1/scans?${params.toString()}`, {
+            method: 'GET',
+            headers: {
+                'apikey': SUPABASE_ANON_KEY,
+                'Authorization': `Bearer ${SUPABASE_ANON_KEY}`
+            },
+            signal: controller.signal
+        });
+        if (!response.ok) return null;
+        const rows = await response.json().catch(() => []);
+        if (!Array.isArray(rows) || rows.length === 0) return null;
+        return rows[0].created_at || null;
+    } catch (e) {
+        return null;
+    } finally {
+        clearTimeout(timeoutId);
+    }
+}
+
 async function syncScanToSupabase(payload, idempotencyKey) {
     const supabasePayload = {
         operator_name: payload.operator,
@@ -815,11 +861,22 @@ async function syncScanToSupabase(payload, idempotencyKey) {
         }
 
         const errorData = await response.json().catch(() => ({}));
-        return classifySyncResult({
+        const classified = classifySyncResult({
             httpStatus: response.status,
             errorCode: errorData.code,
             errorMessage: errorData.message || errorData.details || errorData.hint || response.statusText
         });
+
+        if (classified.status === 'DUPLICATE') {
+            const existingCreatedAt = await lookupExistingScanCreatedAt(
+                payload.part_number,
+                payload.serial_number
+            );
+            const ageStatus = classifyExistingScanConflict({ createdAt: existingCreatedAt });
+            return makeSyncResult(ageStatus, classified);
+        }
+
+        return classified;
     } catch (e) {
         clearTimeout(timeoutId);
 
