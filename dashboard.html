@@ -1047,7 +1047,7 @@
                 <label>To Date</label>
                 <input type="date" id="filterDateTo">
             </div>
-            <button class="btn btn-primary" onclick="applyFilters()">🔍 Apply</button>
+            <button class="btn btn-primary" onclick="fetchScans()">🔍 Apply</button>
             <button class="btn btn-secondary" onclick="clearFilters()">✕ Clear</button>
             <button class="btn btn-success" onclick="exportXLSX()">📥 Export XLSX</button>
             <button class="btn btn-add" onclick="openAddModal()">➕ Add Record</button>
@@ -1094,7 +1094,7 @@
             <div class="table-footer">
                 <div class="auto-refresh">
                     <label class="toggle">
-                        <input type="checkbox" id="autoRefresh" checked>
+                        <input type="checkbox" id="autoRefresh">
                         <span class="toggle-slider"></span>
                     </label>
                     <span>Auto-refresh (30s)</span>
@@ -1228,6 +1228,38 @@
         const footerInfo = document.getElementById('footerInfo');
         const autoRefreshToggle = document.getElementById('autoRefresh');
 
+        function addDaysYmd(ymd, days) {
+            const [year, month, day] = String(ymd || '').split('-').map(Number);
+            if (!year || !month || !day) return '';
+            const utc = new Date(Date.UTC(year, month - 1, day + days));
+            return utc.toISOString().slice(0, 10);
+        }
+
+        function instantForEasternMidnight(ymd) {
+            const candidates = [
+                new Date(`${ymd}T00:00:00-04:00`),
+                new Date(`${ymd}T00:00:00-05:00`)
+            ];
+            for (const inst of candidates) {
+                const ymdNy = inst.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+                const timeNy = inst.toLocaleTimeString('en-GB', { timeZone: 'America/New_York', hour12: false });
+                if (ymdNy === ymd && timeNy.startsWith('00:00:00')) return inst;
+            }
+            return candidates[0];
+        }
+
+        function utcRangeForEasternYmd(ymd) {
+            if (!ymd || !/^\d{4}-\d{2}-\d{2}$/.test(ymd)) return null;
+            const start = instantForEasternMidnight(ymd);
+            const end = instantForEasternMidnight(addDaysYmd(ymd, 1));
+            if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return null;
+            return { gte: start.toISOString(), lt: end.toISOString() };
+        }
+
+        function easternYmdToday() {
+            return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        }
+
         // Format date for display
         // Timestamps from Supabase are stored in UTC (with +00 offset).
         // We convert them to Eastern Time for display.
@@ -1250,38 +1282,53 @@
             });
         }
 
-        // Fetch all scans with pagination (Supabase has 1000 row default limit)
+        // Fetch scans for the selected Eastern date range (1000-row pages).
+        // No date range: newest 1000 only. Dated range: up to 5000.
         async function fetchScans() {
             try {
                 let allData = [];
                 let page = 0;
-                const pageSize = 1000;
+                const fetchPageSize = 1000;
                 let hasMore = true;
+                let fetchTruncated = false;
 
-                // Fetch in pages to get all records
+                const dateFrom = document.getElementById('filterDateFrom').value;
+                const dateTo = document.getElementById('filterDateTo').value;
+                const fromRange = utcRangeForEasternYmd(dateFrom);
+                const toRange = utcRangeForEasternYmd(dateTo);
+                const gte = fromRange ? fromRange.gte : null;
+                const lt = toRange ? toRange.lt : null;
+                const maxPages = (gte || lt) ? 5 : 1;
+
                 while (hasMore) {
-                    const start = page * pageSize;
-                    const end = start + pageSize - 1;
+                    const start = page * fetchPageSize;
+                    const end = start + fetchPageSize - 1;
 
-                    const { data, error } = await supabaseClient
+                    let query = supabaseClient
                         .from('scans')
                         .select('*')
                         .order('created_at', { ascending: false })
                         .range(start, end);
+                    if (gte) query = query.gte('created_at', gte);
+                    if (lt) query = query.lt('created_at', lt);
+
+                    const { data, error } = await query;
 
                     if (error) throw error;
 
                     if (data && data.length > 0) {
                         allData = allData.concat(data);
                         page++;
-                        hasMore = data.length === pageSize; // If we got a full page, there might be more
+                        hasMore = data.length === fetchPageSize;
                     } else {
                         hasMore = false;
                     }
 
-                    // Safety limit to prevent infinite loops
-                    if (page > 10) {
-                        console.warn('Pagination limit reached (10,000 records)');
+                    if (page >= maxPages) {
+                        if (hasMore) {
+                            fetchTruncated = true;
+                            console.warn(`Stopped after ${maxPages * fetchPageSize} scans. Narrow the date range.`);
+                        }
                         break;
                     }
                 }
@@ -1317,6 +1364,10 @@
                     else relativeTime = `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
 
                     document.getElementById('lastScanTime').textContent = relativeTime;
+                }
+
+                if (fetchTruncated) {
+                    footerInfo.textContent = `${footerInfo.textContent} · showing newest loaded rows — narrow dates to see more`;
                 }
 
             } catch (e) {
@@ -1851,14 +1902,13 @@
                     break;
             }
 
-            applyFilters();
+            fetchScans();
         }
-
-        // Clear filters
         function clearFilters() {
             document.getElementById('searchSerial').value = '';
-            document.getElementById('filterDateFrom').value = '';
-            document.getElementById('filterDateTo').value = '';
+            const today = easternYmdToday();
+            document.getElementById('filterDateFrom').value = today;
+            document.getElementById('filterDateTo').value = today;
 
             // Clear multi-select checkboxes
             ['operator', 'station', 'part'].forEach(type => {
@@ -1869,8 +1919,11 @@
 
             // Remove active class from quick buttons
             document.querySelectorAll('.quick-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.quick-btn').forEach(btn => {
+                if ((btn.textContent || '').trim() === 'Today') btn.classList.add('active');
+            });
 
-            applyFilters();
+            fetchScans();
         }
 
         // ===== PAGINATION FUNCTIONS =====
@@ -2240,6 +2293,14 @@
         }
 
         // Initialize
+        (function initDashboardDates() {
+            const today = easternYmdToday();
+            document.getElementById('filterDateFrom').value = today;
+            document.getElementById('filterDateTo').value = today;
+            document.querySelectorAll('.quick-btn').forEach(btn => {
+                if ((btn.textContent || '').trim() === 'Today') btn.classList.add('active');
+            });
+        })();
         fetchScans();
         startAutoRefresh();
     </script>
