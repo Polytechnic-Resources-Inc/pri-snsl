@@ -52,6 +52,12 @@
             z-index: 1;
         }
 
+        @media (orientation: landscape) and (min-width: 1000px) {
+            .wrap {
+                max-width: 960px;
+            }
+        }
+
         .header-bar {
             display: flex;
             justify-content: space-between;
@@ -190,14 +196,14 @@
         }
 
         .status {
-            padding: 10px;
+            padding: 12px;
             border-radius: 8px;
             margin-top: 10px;
             font-weight: 700;
             display: none;
             align-items: center;
             gap: 8px;
-            font-size: 14px;
+            font-size: 20px;
         }
 
         .status.show {
@@ -229,24 +235,11 @@
         }
 
         .last-scan-preview {
-            display: flex;
-            flex-wrap: wrap;
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
             gap: 10px;
             padding: 10px 0;
-        }
-
-        .last-scan-preview .scan-data-col {
-            flex: 1 1 auto;
-            min-width: 80px;
-        }
-
-        .last-scan-preview .scan-data-col:nth-child(1),
-        .last-scan-preview .scan-data-col:nth-child(2) {
-            flex: 1 1 45%;
-        }
-
-        .last-scan-preview .scan-data-col:nth-child(3) {
-            flex: 0 0 auto;
+            align-items: start;
         }
 
         .history-item {
@@ -288,26 +281,26 @@
         }
 
         .last-scan-serial {
-            font-weight: 400;
-            color: var(--text-muted);
+            font-weight: 700;
+            color: var(--text-primary);
         }
 
         .history-part-num {
-            font-size: 14px;
+            font-size: 16px;
             font-weight: 700;
             color: var(--text-primary);
         }
 
         .history-serial-num {
-            font-size: 13px;
-            font-weight: 400;
-            color: var(--text-muted);
+            font-size: 16px;
+            font-weight: 700;
+            color: var(--text-primary);
         }
 
         .history-status {
             display: inline-block;
             font-weight: 700;
-            font-size: 12px;
+            font-size: 16px;
             text-transform: uppercase;
             padding: 3px 10px;
             border-radius: 10px;
@@ -316,7 +309,7 @@
         }
 
         #lastScanStatus {
-            font-size: 13px;
+            font-size: 16px;
             padding: 5px 12px;
         }
 
@@ -432,7 +425,7 @@
         }
 
         .helper-text {
-            font-size: 10px;
+            font-size: 14px;
             color: var(--text-muted);
             margin-top: 5px;
             line-height: 1.3;
@@ -475,7 +468,7 @@
             <div id="clockStatus" class="status-badge" style="background: var(--navy);">--:-- AM</div>
             <div id="internetStatus" class="status-badge" style="display: none;">🌐 ONLINE</div>
             <div id="supabaseStatus" class="status-badge" style="display: none;">☁️ CHECKING...</div>
-            <div id="versionBadge" class="status-badge" style="background: #7c3aed; font-size: 10px;">v8.8.6</div>
+            <div id="versionBadge" class="status-badge" style="background: #7c3aed; font-size: 10px;">v8.8.7</div>
         </div>
         <div id="offlineWarning">⚠️ Checking connection - Scans will queue automatically</div>
         <div class="card" id="operatorStationRow">
@@ -571,7 +564,7 @@
                 ⚠️ Scans waiting to sync - will sync automatically when online</div>
         </div>
         <div class="footer">
-            © 2025 Polytechnic Resources, Inc. | v8.8.6
+            © 2025 Polytechnic Resources, Inc. | v8.8.7
         </div>
     </div>
     <div class="modal-overlay" id="correctionModal">
