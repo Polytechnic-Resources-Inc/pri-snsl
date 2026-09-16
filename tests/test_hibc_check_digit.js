@@ -1,6 +1,8 @@
 /**
  * Test for HIBC Check Digit Validation Fix (v8.6.4)
- * Tests that check digits are only stripped when they are valid HIBC characters
+ * Historical snippet (v8.6.4). Live HIBC behavior is tested in
+ * tests/test_scan_parse_regressions.js — all-numeric serials no longer
+ * strip the last digit as of v8.8.8.
  */
 
 // Simulate the check digit stripping logic (v8.6.4)
