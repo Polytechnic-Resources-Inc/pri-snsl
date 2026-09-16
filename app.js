@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.8: Keep all-numeric HIBC serial digits when check char is missing; recover 01-prefixed chopped GS1
 // v8.8.7: Larger operator type + landscape 960px wrap / Last Scan 3-col
 // v8.8.6: Unique part+serial retry within 60s shows Saved, not Duplicate
 // v8.8.5: Non-blocking config load + 8s health/config timeouts + local config cache
@@ -428,10 +429,40 @@ const PRODUCT_SERIAL_RULES = {
         extractGroup: 1,
         description: 'Extract full 6100E + 5 digits (36 records), ignore trailing check digits/padding'
     },
+    'P5557100': {
+        pattern: /^(7100\d{5}).*$/,
+        extractGroup: 1,
+        description: 'Extract 7100 + 5 digits (9-char serial). Guns often omit the HIBC check char; do not treat last serial digit as check.'
+    },
     'P5557100E': {
         pattern: /^(7100E\d{5}).*$/,
         extractGroup: 1,
         description: 'Extract full 7100E + 5 digits (138 records), ignore trailing check digits/padding'
+    },
+    'P5551100': {
+        pattern: /^(1100\d{5}).*$/,
+        extractGroup: 1,
+        description: 'Extract 1100 + 5 digits (9-char serial)'
+    },
+    'P5553100': {
+        pattern: /^(3100\d{5}).*$/,
+        extractGroup: 1,
+        description: 'Extract 3100 + 5 digits (9-char serial)'
+    },
+    'P5554100': {
+        pattern: /^(4100\d{5}).*$/,
+        extractGroup: 1,
+        description: 'Extract 4100 + 5 digits (9-char serial)'
+    },
+    'P5556100': {
+        pattern: /^(6100\d{5}).*$/,
+        extractGroup: 1,
+        description: 'Extract 6100 + 5 digits (9-char serial)'
+    },
+    'P5559100': {
+        pattern: /^(9100\d{5}).*$/,
+        extractGroup: 1,
+        description: 'Extract 9100 + 5 digits (9-char serial)'
     },
     'P5559100E': {
         pattern: /^(9100E\d{5}).*$/,
@@ -1410,14 +1441,20 @@ function validateRawBarcode(rawScan) {
 function looksLikeTruncatedGs1(raw) {
     if (!raw || typeof raw !== 'string') return false;
     const s = raw.toUpperCase().trim();
-    if (s.startsWith('01') || s.includes('/$+')) return false;
-    return /(?:11|17|13)\d{6}21[A-Z0-9]/.test(s) || /^\d{8,}21(?:MGCK|MGC|PUL|R756|EBS|FIL)/.test(s);
+    if (s.includes('/$+')) return false;
+    if (/(?:11|17|13)\d{6}21[A-Z0-9]/.test(s) || /21(?:MGCK|MGC|PUL|R756|EBS|FIL)/.test(s)) {
+        if (!s.startsWith('01')) return true;
+        // 01-prefixed but internally chopped (GTIN digits missing) still needs recovery.
+        const prefix = s.substring(0, 16);
+        if (!PART_NUMBER_MAP[prefix]) return true;
+    }
+    return false;
 }
 
 function recoverTruncatedGs1(raw, partMap) {
     if (!raw) return null;
     const s = String(raw).toUpperCase().trim();
-    if (s.startsWith('01') || s.includes('/$+')) return null;
+    if (s.includes('/$+')) return null;
 
     const serialMatch = s.match(/(?:11|17|13)\d{6}21([A-Z0-9]+)$/)
         || s.match(/21((?:MGCK|MGC|PUL|R756|EBS|FIL)[A-Z0-9]+)$/);
@@ -1621,9 +1658,10 @@ function parsePN_SN(s) {
                     if (trailingChars.length > maxTrailing) {
                         sNum = sNum.substring(0, sNum.length - 1);
                     }
-                } else {
-                    sNum = sNum.substring(0, sNum.length - 1);
                 }
+                // All-numeric serial: keep the last digit. HIBC check chars that
+                // actually arrived are letters or -. $/+% and were stripped above.
+                // Stripping here deleted real serial digits when the gun omitted `$`.
             }
         }
 
@@ -2090,7 +2128,7 @@ scanInput.addEventListener('keydown', async (ev) => {
         }
     }
 
-    if ((!parsed.part || parsed.part === 'UNKNOWN') && looksLikeTruncatedGs1(raw)) {
+    if (!parsed.part || parsed.part === 'UNKNOWN') {
         const recovered = recoverTruncatedGs1(raw, PART_NUMBER_MAP);
         if (recovered) {
             console.log('🔧 Recovered truncated GS1:', recovered);

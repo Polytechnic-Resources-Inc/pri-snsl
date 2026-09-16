@@ -1,8 +1,8 @@
-// ===== SERVICE WORKER v8.8.7 =====
+// ===== SERVICE WORKER v8.8.8 =====
 // Caching strategy for offline scanning with automatic cache updates
 
 // Update this version with each release - triggers automatic cache refresh
-const CACHE_VERSION = 'v8.8.7';
+const CACHE_VERSION = 'v8.8.8';
 const CACHE_NAME = `seescan-${CACHE_VERSION}-offline`;
 
 // Core assets to cache immediately on install
