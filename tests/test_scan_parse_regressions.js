@@ -59,6 +59,24 @@ function test(desc, fn) {
     tests.push({ desc, fn });
 }
 
+test('PUL9000K HIBC scan with truncated payload is rejected before queueing', () => {
+    const raw = '+B446PUL9000K0/$+PU6Z';
+    const r = resolveScan(p, raw);
+    if (r.validation.valid !== true) throw new Error('raw validation unexpectedly failed');
+    if (r.part !== 'PUL9000K') throw new Error('part ' + r.part);
+    if (r.serial !== 'PU6') throw new Error('serial ' + r.serial);
+    const result = p.validateParsedScan(r.part, r.serial);
+    if (result.valid !== false) throw new Error('expected parsed serial to be rejected');
+});
+
+test('PUL9000K complete HIBC barcode produces an accepted serial', () => {
+    const r = resolveScan(p, '+B446PUL9000K0/$+PUL9000K296890');
+    if (r.part !== 'PUL9000K') throw new Error('part ' + r.part);
+    if (r.serial !== 'PUL9000K29689') throw new Error('serial ' + r.serial);
+    const result = p.validateParsedScan(r.part, r.serial);
+    if (!result || result.valid !== true) throw new Error('expected valid PUL9000K serial to pass');
+});
+
 test('HIBC P5557100 with trailing $ keeps 9-digit serial (prod 41264)', () => {
     const r = p.parsePN_SN('+B446P55571001/$+710010217$');
     if (r.part !== 'P5557100') throw new Error('part ' + r.part);
