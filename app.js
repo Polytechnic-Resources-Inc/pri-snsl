@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.10: Reject incomplete PUL9000K serials before queueing
 // v8.8.9: Durable retry identity, truthful queue feedback and offline/startup hardening
 // v8.8.8: Keep all-numeric HIBC serial digits when check char is missing; recover 01-prefixed chopped GS1
 // v8.8.7: Larger operator type + landscape 960px wrap / Last Scan 3-col
@@ -1549,6 +1550,16 @@ function applyProductSpecificSerialExtraction(partCode, serial) {
     return serial;
 }
 
+function validateParsedScan(partCode, serial) {
+    if (partCode === 'PUL9000K' && !/^PUL9000K\d{5}$/.test(serial || '')) {
+        return {
+            valid: false,
+            reason: 'Incomplete PUL9000K serial — rescan the full label'
+        };
+    }
+    return { valid: true };
+}
+
 function parsePN_SN(s) {
     const raw = String(s).toUpperCase().trim();
 
@@ -2157,6 +2168,14 @@ scanInput.addEventListener('keydown', async (ev) => {
             : 'Unknown part number — rescan the full label';
         console.log('❌ UNKNOWN part blocked:', reason, raw);
         showValidationError(reason, raw);
+        scanInput.value = '';
+        scanInput.focus();
+        return;
+    }
+
+    const parsedValidation = validateParsedScan(cleanedPart, cleanedSerial);
+    if (!parsedValidation.valid) {
+        showValidationError(parsedValidation.reason, raw);
         scanInput.value = '';
         scanInput.focus();
         return;
