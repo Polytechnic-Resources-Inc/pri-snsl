@@ -18,6 +18,7 @@ node tests/test_hibc_check_digit.js
 node tests/test_scan_cache.js
 node tests/test_sync_classification.js
 node tests/test_dashboard_query.js
+node tests/test_dashboard_edit_modal.js
 node tests/test_supabase_health.js
 node tests/test_config_cache.js
 node tests/test_760e_endcap_fix.js
@@ -44,6 +45,7 @@ Some report helper checks may require the `scripts` directory on the Python path
 | `test_scan_cache.js` | Recent duplicate cache behavior |
 | `test_sync_classification.js` | Supabase response classification and unique-conflict age |
 | `test_dashboard_query.js` | Dashboard Eastern-day UTC range helper |
+| `test_dashboard_edit_modal.js` | Edit modal keeps operator/station on open and save |
 | `test_supabase_health.js` | Supabase health check behavior |
 | `test_config_cache.js` | Config cache parse/save rules and fetch timeout helper |
 | `test_760e_endcap_fix.js` | 100760 end-cap handling |
