@@ -36,9 +36,11 @@ function loadDashboardFns() {
         extractFunction(source, 'findScanById'),
         extractFunction(source, 'namesForEditSelect'),
         extractFunction(source, 'buildScanWritePayload'),
+        extractFunction(source, 'mergeScanRecord'),
         'this.findScanById = findScanById;',
         'this.namesForEditSelect = namesForEditSelect;',
-        'this.buildScanWritePayload = buildScanWritePayload;'
+        'this.buildScanWritePayload = buildScanWritePayload;',
+        'this.mergeScanRecord = mergeScanRecord;'
     ].join('\n');
     const sandbox = {};
     vm.runInNewContext(script, sandbox);
@@ -46,7 +48,7 @@ function loadDashboardFns() {
 }
 
 function runTests() {
-    const { findScanById, namesForEditSelect, buildScanWritePayload, source } = loadDashboardFns();
+    const { findScanById, namesForEditSelect, buildScanWritePayload, mergeScanRecord, source } = loadDashboardFns();
     let passed = 0;
     let failed = 0;
 
@@ -147,6 +149,32 @@ function runTests() {
         assert.ok(source.includes('namesForEditSelect('));
         assert.ok(source.includes('fillNamedSelect('));
         assert.ok(source.includes('escapeHtml(name)'));
+    });
+
+    check('mergeScanRecord updates the matching scan in place', () => {
+        const scans = [{
+            id: 41261,
+            serial_number: 'PUL9000K33736',
+            operator_name: 'Yubery',
+            station_id: 'MAIN',
+            batch_comment: 'TW'
+        }];
+        const updated = mergeScanRecord(scans, '41261', { batch_comment: 'TW2', operator_name: 'Yubery', station_id: 'MAIN' });
+        assert.strictEqual(updated.batch_comment, 'TW2');
+        assert.strictEqual(scans[0].batch_comment, 'TW2');
+        assert.strictEqual(scans[0].operator_name, 'Yubery');
+    });
+
+    check('mergeScanRecord returns null when the scan is missing', () => {
+        assert.strictEqual(mergeScanRecord([{ id: 1 }], 2, { batch_comment: 'x' }), null);
+    });
+
+    check('edit save updates locally and does not refetch the whole range', () => {
+        const saveStart = source.indexOf('async function saveRecord');
+        const saveFn = source.slice(saveStart, source.indexOf('// ===== DELETE MODAL'));
+        assert.ok(saveFn.includes('mergeScanRecord('));
+        assert.ok(saveFn.includes('applyFilters(false)'));
+        assert.ok(saveFn.includes('await fetchScans()'));
     });
 
     console.log('\n' + '='.repeat(50));

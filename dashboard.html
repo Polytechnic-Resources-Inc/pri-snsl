@@ -1800,7 +1800,7 @@
         }
 
         // Apply filters
-        function applyFilters() {
+        function applyFilters(resetPage) {
             const searchSerial = document.getElementById('searchSerial').value.toLowerCase().trim();
             const selectedOperators = getSelectedValues('operator');
             const selectedStations = getSelectedValues('station');
@@ -1842,7 +1842,7 @@
                 return true;
             });
 
-            currentPage = 1; // Reset to first page when filters change
+            if (resetPage !== false) currentPage = 1;
             applySort();
             renderTable();
         }
@@ -2200,6 +2200,13 @@
             return scans.find(s => String(s.id) === key);
         }
 
+        function mergeScanRecord(scans, recordId, recordData) {
+            const scan = findScanById(scans, recordId);
+            if (!scan) return null;
+            Object.assign(scan, recordData);
+            return scan;
+        }
+
         function namesForEditSelect(existingNames, currentName) {
             const names = [...new Set((existingNames || []).filter(Boolean).map(n => String(n)))];
             if (currentName && !names.includes(currentName)) names.push(currentName);
@@ -2352,6 +2359,14 @@
                         .eq('id', recordId);
 
                     if (error) throw error;
+                    if (!mergeScanRecord(allScans, recordId, recordData)) {
+                        closeRecordModal();
+                        await fetchScans();
+                        return;
+                    }
+                    applyFilters(false);
+                    updateOperatorCards();
+                    lastUpdate.textContent = new Date().toLocaleTimeString();
                 } else {
                     // Insert new record with custom created_at
                     const { error } = await supabaseClient
@@ -2359,10 +2374,12 @@
                         .insert([recordData]);
 
                     if (error) throw error;
+                    closeRecordModal();
+                    await fetchScans();
+                    return;
                 }
 
                 closeRecordModal();
-                await fetchScans(); // Refresh data
 
             } catch (e) {
                 console.error('Save error:', e);
