@@ -2194,7 +2194,53 @@
         // ===== EDIT MODAL FUNCTIONS =====
         let isEditMode = false;
 
-        async function populateModalDropdowns() {
+        function findScanById(scans, scanId) {
+            if (!Array.isArray(scans) || scanId == null || scanId === '') return undefined;
+            const key = String(scanId);
+            return scans.find(s => String(s.id) === key);
+        }
+
+        function namesForEditSelect(existingNames, currentName) {
+            const names = [...new Set((existingNames || []).filter(Boolean).map(n => String(n)))];
+            if (currentName && !names.includes(currentName)) names.push(currentName);
+            return names.sort();
+        }
+
+        function buildScanWritePayload(formValues, context) {
+            const isEdit = !!(context && context.isEdit);
+            const existing = (context && context.existingScan) || {};
+            const payload = {
+                serial_number: String(formValues.serial_number || '').trim(),
+                part_id: String(formValues.part_id || '').trim(),
+                operator_name: formValues.operator_name || '',
+                station_id: formValues.station_id || '',
+                batch_comment: String(formValues.batch_comment || '').trim(),
+                dashboard_notes: String(formValues.dashboard_notes || '').trim()
+            };
+            if (isEdit) {
+                if (!payload.operator_name && existing.operator_name) {
+                    payload.operator_name = existing.operator_name;
+                }
+                if (!payload.station_id && existing.station_id) {
+                    payload.station_id = existing.station_id;
+                }
+            }
+            if (formValues.created_at) {
+                payload.created_at = formValues.created_at;
+            }
+            return payload;
+        }
+
+        function fillNamedSelect(selectEl, placeholderLabel, existingNames, selectedValue) {
+            if (!selectEl) return;
+            const current = selectedValue || '';
+            const names = namesForEditSelect(existingNames, current);
+            selectEl.innerHTML = `<option value="">${escapeHtml(placeholderLabel)}</option>` +
+                names.map(name => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+            selectEl.value = current;
+        }
+
+        async function populateModalDropdowns(currentOperator, currentStation) {
             let operators = [];
             let stations = [];
             try {
@@ -2208,29 +2254,23 @@
                 stations = (stationResult.data || []).map(row => row.name).filter(Boolean);
             } catch (e) {
                 console.error('Configuration load error:', e);
-                alert('Could not load active operators and stations. Please refresh.');
+                operators = allScans.map(s => s.operator_name);
+                stations = allScans.map(s => s.station_id);
             }
 
-            const opSelect = document.getElementById('editOperator');
-            const stSelect = document.getElementById('editStation');
-
-            opSelect.innerHTML = '<option value="">Select Operator</option>' +
-                operators.map(o => `<option value="${escapeHtml(o)}">${escapeHtml(o)}</option>`).join('');
-            stSelect.innerHTML = '<option value="">Select Station</option>' +
-                stations.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join('');
+            fillNamedSelect(document.getElementById('editOperator'), 'Select Operator', operators, currentOperator);
+            fillNamedSelect(document.getElementById('editStation'), 'Select Station', stations, currentStation);
         }
 
-        function openEditModal(scanId) {
-            scanId = numericRecordId(scanId);
-            if (scanId === null) return;
-            const scan = allScans.find(s => s.id === scanId);
+        async function openEditModal(scanId) {
+            const scan = findScanById(allScans, scanId);
             if (!scan) return;
 
             isEditMode = true;
-            populateModalDropdowns();
+            await populateModalDropdowns(scan.operator_name, scan.station_id);
 
             document.getElementById('modalTitle').textContent = '✏️ Edit Record';
-            document.getElementById('editRecordId').value = scanId;
+            document.getElementById('editRecordId').value = scan.id;
             document.getElementById('editSerial').value = scan.serial_number || '';
             document.getElementById('editPart').value = scan.part_id || '';
             document.getElementById('editOperator').value = scan.operator_name || '';
@@ -2251,9 +2291,9 @@
             document.getElementById('recordModal').style.display = 'flex';
         }
 
-        function openAddModal() {
+        async function openAddModal() {
             isEditMode = false;
-            populateModalDropdowns();
+            await populateModalDropdowns('', '');
 
             document.getElementById('modalTitle').textContent = '➕ Add New Record';
             document.getElementById('editRecordId').value = '';
@@ -2283,14 +2323,18 @@
             btn.disabled = true;
             btn.textContent = 'Saving...';
 
-            const recordData = {
-                serial_number: document.getElementById('editSerial').value.trim(),
-                part_id: document.getElementById('editPart').value.trim(),
+            const recordId = document.getElementById('editRecordId').value;
+            const existingScan = isEditMode ? findScanById(allScans, recordId) : null;
+            const dateTimeValue = document.getElementById('editDateTime').value;
+            const recordData = buildScanWritePayload({
+                serial_number: document.getElementById('editSerial').value,
+                part_id: document.getElementById('editPart').value,
                 operator_name: document.getElementById('editOperator').value,
                 station_id: document.getElementById('editStation').value,
-                batch_comment: document.getElementById('editComment').value.trim(),
-                dashboard_notes: document.getElementById('editNotes').value.trim()
-            };
+                batch_comment: document.getElementById('editComment').value,
+                dashboard_notes: document.getElementById('editNotes').value,
+                created_at: dateTimeValue ? new Date(dateTimeValue).toISOString() : undefined
+            }, { isEdit: isEditMode, existingScan });
 
             if (!recordData.serial_number) {
                 alert('Serial Number is required');
@@ -2300,15 +2344,8 @@
             }
 
             try {
-                // Get datetime value (used for both add and edit)
-                const dateTimeValue = document.getElementById('editDateTime').value;
-                if (dateTimeValue) {
-                    recordData.created_at = new Date(dateTimeValue).toISOString();
-                }
-
                 if (isEditMode) {
                     // Update existing record
-                    const recordId = document.getElementById('editRecordId').value;
                     const { error } = await supabaseClient
                         .from('scans')
                         .update(recordData)
