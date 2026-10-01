@@ -1,5 +1,5 @@
 // Offline shell: versioned assets, no API caching, no forced reload during scanning.
-const CACHE_VERSION = 'v8.8.11';
+const CACHE_VERSION = 'v8.8.12';
 const CACHE_NAME = `seescan-${CACHE_VERSION}-offline`;
 const CORE_ASSETS = [
     './', './index.html', './app.js', './supabase-health.js', './scan-cache.js',
@@ -7,9 +7,12 @@ const CORE_ASSETS = [
     './dashboard.html', './my-scans.html'
 ];
 self.addEventListener('install', event => {
-    // Reject a partial install so the previous complete offline shell remains available.
-    // Let the browser activate the update when old clients close, not mid-scan.
-    event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(CORE_ASSETS)));
+    // Activate as soon as the new shell is cached. The page reloads only when idle.
+    event.waitUntil(
+        caches.open(CACHE_NAME)
+            .then(cache => cache.addAll(CORE_ASSETS))
+            .then(() => self.skipWaiting())
+    );
 });
 self.addEventListener('fetch', event => {
     const url = new URL(event.request.url);

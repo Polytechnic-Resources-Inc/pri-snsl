@@ -106,6 +106,23 @@ test('HIBC 757E2 mixed serial does not strip last digit (v8.8.3)', () => {
     if (r.serial !== 'R757E210173') throw new Error('serial ' + r.serial);
 });
 
+test('HIBC 757WM keeps 6-digit serial when gun omits check char (prod 43037)', () => {
+    const r = p.parsePN_SN('+B446757WM1/$+R757WM102838');
+    if (r.part !== '757WM') throw new Error('part ' + r.part);
+    if (r.serial !== 'R757WM102838') throw new Error('serial ' + r.serial);
+});
+
+test('HIBC 757WM still strips letter/special check char', () => {
+    const r = p.parsePN_SN('+B446757WM1/$+R757WM102837.');
+    if (r.part !== '757WM') throw new Error('part ' + r.part);
+    if (r.serial !== 'R757WM102837') throw new Error('serial ' + r.serial);
+});
+
+test('HIBC 757WM still strips leftover numeric check digit after 6 serial digits', () => {
+    const r = p.parsePN_SN('+B446757WM1/$+R757WM1027991');
+    if (r.serial !== 'R757WM102799') throw new Error('serial ' + r.serial);
+});
+
 test('chopped GS1 starting with 01 still recovers MGC serial (dashboard UNKNOWN Sep 14)', () => {
     const raw = '0100162502651126082521MGC2903514';
     const r = resolveScan(p, raw);

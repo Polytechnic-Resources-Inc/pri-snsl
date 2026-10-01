@@ -14,6 +14,18 @@ test('HTTPS same-origin navigation uses cached shell when offline', async () => 
     assert.equal(await (await response).text(), 'offline shell');
     assert.ok(reads > 0);
 });
+test('install skipWaiting after core assets are cached', async () => {
+    const listeners = {};
+    let skipped = 0;
+    let completion;
+    vm.runInNewContext(source, { console: { log() {}, warn() {}, error() {} }, URL, Response,
+        self: { location: { origin: 'https://local.invalid' }, addEventListener: (type, fn) => listeners[type] = fn,
+            skipWaiting: () => { skipped++; return Promise.resolve(); } },
+        caches: { open: async () => ({ addAll: async () => {} }) } });
+    listeners.install({ waitUntil: p => completion = p });
+    await completion;
+    assert.equal(skipped, 1);
+});
 test('activation does not force-navigate or clear unrelated cache', async () => {
     const listeners = {}, deleted = [];
     let completion, navigated = 0;
