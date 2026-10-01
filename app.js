@@ -2,7 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
-// v8.8.12: Keep 6-digit 757WM serials when HIBC check char is omitted
+// v8.8.12: Keep 6-digit 757WM serials; idle-only tablet auto-update
 // v8.8.11: Parse MGC756NWS / MGC756NW GS1 serials to 536756-NWS / 536756-NW
 // v8.8.10: Reject incomplete PUL9000K serials before queueing
 // v8.8.9: Durable retry identity, truthful queue feedback and offline/startup hardening
@@ -2367,16 +2367,76 @@ async function initApp() {
     loadLastScan().catch(err => console.warn('Failed to load last scan:', err));
     fetchHistory();
 
-    // Browser-managed updates: never force-reload a tablet while scanning.
-    if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('./service-worker.js')
-            .catch(err => console.warn('Offline shell registration failed:', err));
-    }
+    // New SW activates immediately; page reloads only when idle (pending 0, empty scan box).
+    registerScannerServiceWorker();
 
     console.log('🚀 App initialized');
 }
 
 // Show update notification to user (v8.8.2)
+function scannerIsIdleForUpdate(state) {
+    const pending = Number(state && state.pendingCount);
+    const scanValue = state && state.scanValue != null ? String(state.scanValue) : '';
+    return !!(state && !state.isProcessing && !state.isFlushingQueue && pending === 0 && scanValue.trim() === '');
+}
+
+function applyServiceWorkerUpdateWhenIdle(state, reload) {
+    if (!scannerIsIdleForUpdate(state)) return false;
+    reload();
+    return true;
+}
+
+let swIdleReloadTimer = null;
+
+async function tryReloadForServiceWorkerUpdate() {
+    let pendingCount = 0;
+    try {
+        pendingCount = await getPendingCount();
+    } catch (e) {
+        pendingCount = 0;
+    }
+    const state = {
+        pendingCount,
+        scanValue: (typeof scanInput !== 'undefined' && scanInput) ? scanInput.value : '',
+        isProcessing,
+        isFlushingQueue,
+    };
+    return applyServiceWorkerUpdateWhenIdle(state, () => window.location.reload());
+}
+
+function armServiceWorkerIdleReload() {
+    if (swIdleReloadTimer) return;
+    const tick = async () => {
+        const done = await tryReloadForServiceWorkerUpdate();
+        swIdleReloadTimer = done ? null : setTimeout(tick, 15000);
+    };
+    tick();
+}
+
+function registerScannerServiceWorker() {
+    if (!('serviceWorker' in navigator)) return;
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.register('./service-worker.js')
+        .then(reg => {
+            if (reg.waiting) armServiceWorkerIdleReload();
+            reg.addEventListener('updatefound', () => {
+                const worker = reg.installing;
+                if (!worker) return;
+                worker.addEventListener('statechange', () => {
+                    if (worker.state === 'installed' && navigator.serviceWorker.controller) {
+                        armServiceWorkerIdleReload();
+                    }
+                });
+            });
+            setInterval(() => { reg.update().catch(() => {}); }, 5 * 60 * 1000);
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                if (!hadController) return;
+                armServiceWorkerIdleReload();
+            });
+        })
+        .catch(err => console.warn('Offline shell registration failed:', err));
+}
+
 function showUpdateNotification() {
     // v8.8.2: Simplified - just log to console, no banner
     console.log('📢 New version available - page will reload');
