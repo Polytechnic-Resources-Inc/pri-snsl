@@ -126,6 +126,33 @@ test('recoverTruncatedGs1 finds 21MGC even when raw starts with 01', () => {
     if (rec.serial !== 'MGC2903514') throw new Error('serial ' + rec.serial);
 });
 
+test('GS1 MGC756NWS maps to 536756-NWS and strips MGC from serial (prod 42930)', () => {
+    const raw = '01008100162511561126093021MGC756NWS10027';
+    const r = resolveScan(p, raw);
+    if (r.validation.valid !== true) throw new Error('raw validation unexpectedly failed');
+    if (r.part !== '536756-NWS') throw new Error('part ' + r.part);
+    if (r.serial !== '756NWS10027') throw new Error('serial ' + r.serial);
+});
+
+test('GS1 MGC756NWS still parses when GTIN is in part_map as a different 536756 SKU', () => {
+    const mapped = loadParse();
+    mapped.PART_NUMBER_MAP['0100810016251156'] = '536756-NW';
+    const r = resolveScan(mapped, '01008100162511561126093021MGC756NWS10026');
+    if (r.part !== '536756-NWS') throw new Error('part ' + r.part);
+    if (r.serial !== '756NWS10026') throw new Error('serial ' + r.serial);
+});
+
+test('GS1 MGC756NW without S maps to 536756-NW and strips MGC (prod 42474)', () => {
+    const r = resolveScan(p, '01008100162511561123052321MGC756NW10023');
+    if (r.part !== '536756-NW') throw new Error('part ' + r.part);
+    if (r.serial !== '756NW10023') throw new Error('serial ' + r.serial);
+});
+
+test('existing 100756NW serials are not stolen by the MGC 536756-NWS rule', () => {
+    const part = p.extractPartFromSerial('756NW15166');
+    if (part !== '100756NW') throw new Error('part ' + part);
+});
+
 let passed = 0;
 let failed = 0;
 for (const t of tests) {

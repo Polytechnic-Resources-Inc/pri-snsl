@@ -4,7 +4,7 @@
 
 This document describes the current barcode validation and parsing behavior used by the scanner runtime. The active runtime source is `app.js`. Product rule reference data is also present in `product_rules_master_truth.js`, but the browser behavior depends on what is loaded by the deployed app.
 
-Current scanner version: `v8.8.8`.
+Current scanner version: `v8.8.11`.
 
 ## Purpose
 
@@ -76,7 +76,8 @@ For GS1-128 scans:
 4. If the remaining value starts with serial AI `21`, the `21` is removed.
 5. The prefix is looked up in `PART_NUMBER_MAP`.
 6. If no part is found, the code attempts PFR inline part extraction from the serial.
-7. If no part is found after fallback, the part is `UNKNOWN`.
+7. MGC `536756` labels share GS1 prefix `0100810016251156`. Serial `MGC756NWS*` becomes part `536756-NWS` / serial `756NWS*`. Serial `MGC756NW*` (no S) becomes part `536756-NW` / serial `756NW*`. This overrides a GTIN map hit. Bare `756NW*` serials stay `100756NW`.
+8. If no part is found after fallback, the part is `UNKNOWN`.
 
 ## HIBC Behavior
 

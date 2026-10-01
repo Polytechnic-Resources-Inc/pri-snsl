@@ -1,5 +1,5 @@
 // Offline shell: versioned assets, no API caching, no forced reload during scanning.
-const CACHE_VERSION = 'v8.8.10';
+const CACHE_VERSION = 'v8.8.11';
 const CACHE_NAME = `seescan-${CACHE_VERSION}-offline`;
 const CORE_ASSETS = [
     './', './index.html', './app.js', './supabase-health.js', './scan-cache.js',

@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.11: Parse MGC756NWS / MGC756NW GS1 serials to 536756-NWS / 536756-NW
 // v8.8.10: Reject incomplete PUL9000K serials before queueing
 // v8.8.9: Durable retry identity, truthful queue feedback and offline/startup hardening
 // v8.8.8: Keep all-numeric HIBC serial digits when check char is missing; recover 01-prefixed chopped GS1
@@ -1453,8 +1454,9 @@ function recoverTruncatedGs1(raw, partMap) {
         if (part === 'MGC' && /^MGCK1\d/.test(serial)) part = '536719-001';
     }
 
-    if (!part || !serial || part === 'UNKNOWN') return null;
-    return { part, serial };
+    const family = normalizeMgc756Family(part, serial);
+    if (!family.part || !family.serial || family.part === 'UNKNOWN') return null;
+    return family;
 }
 
 /**
@@ -1472,6 +1474,8 @@ function extractPartFromSerial(serial) {
     if (s.startsWith('MGC2C')) return '536713-002C';
     if (s.startsWith('MGCK1S')) return '536719-001S';
     if (s.startsWith('MGCK')) return '536719-001';
+    if (s.startsWith('MGC756NWS') || s.startsWith('756NWS')) return '536756-NWS';
+    if (s.startsWith('MGC756NW')) return '536756-NW';
     if (s.startsWith('MGC')) return 'MGC';
 
     // Respitech R756 patterns
@@ -1485,6 +1489,7 @@ function extractPartFromSerial(serial) {
     if (s.startsWith('756EL')) return '100756EL';
     if (s.startsWith('756EW')) return '100756EW';
     if (s.startsWith('756E2')) return '100756E2';
+    if (s.startsWith('756NWS')) return '536756-NWS';
     if (s.startsWith('756NW')) return '100756NW';
     if (s.startsWith('756NKNW')) return '100756NKNW';
     if (s.startsWith('756')) return '100756';
@@ -1560,6 +1565,25 @@ function validateParsedScan(partCode, serial) {
     return { valid: true };
 }
 
+/**
+ * MGC 536756-NW / 536756-NWS share GS1 prefix 0100810016251156.
+ * Part comes from the serial (NWS vs NW), not the GTIN. Strip the MGC brand prefix.
+ * Do not rewrite bare 756NW* serials — those are 100756NW.
+ */
+function normalizeMgc756Family(part, serial) {
+    if (!serial) return { part, serial };
+    const s = String(serial).toUpperCase().trim();
+    const nws = s.match(/^(?:MGC)?(756NWS\d+)/);
+    if (nws && (s.startsWith('MGC756NWS') || s.startsWith('756NWS'))) {
+        return { part: '536756-NWS', serial: nws[1] };
+    }
+    const nw = s.match(/^MGC(756NW\d+)/);
+    if (nw) {
+        return { part: '536756-NW', serial: nw[1] };
+    }
+    return { part, serial };
+}
+
 function parsePN_SN(s) {
     const raw = String(s).toUpperCase().trim();
 
@@ -1594,7 +1618,8 @@ function parsePN_SN(s) {
                 return { part, serial };
             }
         }
-        return sectionResult(part, serial);
+        const gs1Family = normalizeMgc756Family(part, serial);
+        return sectionResult(gs1Family.part, gs1Family.serial);
     }
 
     // HIBC FORMAT (Contains /$+)
@@ -2151,6 +2176,10 @@ scanInput.addEventListener('keydown', async (ev) => {
             parsed.serial = recovered.serial;
         }
     }
+
+    const family = normalizeMgc756Family(parsed.part, parsed.serial);
+    parsed.part = family.part;
+    parsed.serial = family.serial;
 
     // Final Clean
     const cleanedSerial = cleanSerialNumber(parsed.serial); // Apply final robust cleaning
