@@ -4,7 +4,7 @@
 
 This document describes the current barcode validation and parsing behavior used by the scanner runtime. The active runtime source is `app.js`. Product rule reference data is also present in `product_rules_master_truth.js`, but the browser behavior depends on what is loaded by the deployed app.
 
-Current scanner version: `v8.8.11`.
+Current scanner version: `v8.8.12`.
 
 ## Purpose
 
@@ -113,9 +113,10 @@ Part-specific digit thresholds:
 | `100758E2` | 6 |
 | `100759E2` | 7 |
 | `757E2` | 6 |
+| `757WM` | 6 |
 | Other parts | 5 |
 
-The `757E2` key is required because some HIBC `446` labels resolve to `757E2` before a `100` prefix is applied.
+The `757E2` and `757WM` keys are required because some HIBC `446` labels resolve to those codes before a `100` prefix is applied. `757WM` serials are `R757WM` + 6 digits. If the gun omits the check character, a threshold of 5 deletes the last serial digit.
 
 ## Product-Specific Rules
 

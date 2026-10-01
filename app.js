@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.12: Keep 6-digit 757WM serials when HIBC check char is omitted
 // v8.8.11: Parse MGC756NWS / MGC756NW GS1 serials to 536756-NWS / 536756-NW
 // v8.8.10: Reject incomplete PUL9000K serials before queueing
 // v8.8.9: Durable retry identity, truthful queue feedback and offline/startup hardening
@@ -142,7 +143,8 @@ const BARCODE_VALIDATION = {
     HIBC_MAX_TRAILING_BEFORE_STRIP: {
         '100756E2': 6, '100757E2': 6, '100758E2': 6,  // 756E/757E/758E + 6 digits
         '100759E2': 7,  // 759E + 7 digits
-        '757E2': 6      // Fix: 757E2 has 6 trailing chars after last letter (v8.8.3)
+        '757E2': 6,     // Fix: 757E2 has 6 trailing chars after last letter (v8.8.3)
+        '757WM': 6      // R757WM + 6 digits; omitted check char was dropping the last serial digit
     },
     SUSPICIOUS_CHARS: /[*#@!~`^&()={}|[\]<>;:'"]/
 };
