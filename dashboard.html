@@ -869,6 +869,8 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            flex-wrap: wrap;
+            row-gap: 2px;
         }
 
         .operator-cards-header .pulse {
@@ -877,6 +879,13 @@
             background: #22c55e;
             border-radius: 50%;
             animation: pulse 2s infinite;
+        }
+
+        .operator-cards-note {
+            flex: 1 1 260px;
+            font-size: 12px;
+            font-weight: 400;
+            color: rgba(255, 255, 255, 0.75);
         }
 
         @keyframes pulse {
@@ -998,10 +1007,11 @@
     <div class="operator-cards-container" id="operatorCardsContainer">
         <div class="operator-cards-header">
             <div class="pulse"></div>
-            <span id="operatorRangeHeading">Operator scans — selected date range</span>
+            <span id="operatorRangeHeading">Recent operator activity — last 30 days</span>
+            <span class="operator-cards-note">Usual = average per weekday, previous 5 weekdays (not today)</span>
         </div>
         <div class="operator-cards" id="operatorCards">
-            <div class="no-operators-today">No scans in the selected date range.</div>
+            <div class="no-operators-today">Loading recent operator activity...</div>
         </div>
     </div>
 
@@ -1285,9 +1295,11 @@
         let loadState = 'idle';
         let loadedRange = '';
         let loadMessage = 'Choose a date range.';
-        let usualByOperator = Object.create(null);
-        let usualStatus = 'idle';
-        let usualGeneration = 0;
+        // Recent operator activity strip: its own rolling 30-day query, independent of the table filters.
+        const ACTIVITY_DAYS = 30;
+        let activitySummary = null;
+        let activityStatus = 'idle';
+        let activityGeneration = 0;
 
         function previousWeekdayYmds(fromYmd, count = 5) {
             const days = [];
@@ -1324,24 +1336,49 @@
             return usual;
         }
 
+        // Window = today plus the previous 29 Eastern calendar days, starting at Eastern midnight.
+        function activityWindow(todayYmd) {
+            const cutoffYmd = addDaysYmd(todayYmd, -(ACTIVITY_DAYS - 1));
+            const fromRange = utcRangeForEasternYmd(cutoffYmd);
+            const todayRange = utcRangeForEasternYmd(todayYmd);
+            if (!fromRange || !todayRange) return null;
+            return { cutoffYmd, gte: fromRange.gte, lt: todayRange.lt };
+        }
+
+        function computeOperatorActivity(rows, todayYmd) {
+            const range = activityWindow(todayYmd);
+            const usualYmds = previousWeekdayYmds(todayYmd, 5);
+            const byOperator = Object.create(null);
+            const inWindow = [];
+            for (const row of rows || []) {
+                const day = easternYmdFromIso(row.created_at);
+                if (!range || !day || day < range.cutoffYmd || day > todayYmd) continue;
+                inWindow.push(row);
+                const op = row.operator_name || 'Unknown';
+                const entry = byOperator[op] || (byOperator[op] = { today: 0, lastScan: null });
+                if (day === todayYmd) entry.today++;
+                const t = Date.parse(row.created_at);
+                if (entry.lastScan == null || t > entry.lastScan) entry.lastScan = t;
+            }
+            return { todayYmd, byOperator, usualYmds, usual: computeUsualByOperator(inWindow, usualYmds) };
+        }
+
         function formatUsual(op) {
-            if (usualStatus !== 'ready') return '—';
-            const value = usualByOperator[op];
+            if (!activitySummary) return '—';
+            const value = activitySummary.usual[op];
             const n = value == null ? 0 : value;
             if (Number.isInteger(n)) return String(n);
             return String(Math.round(n * 10) / 10);
         }
 
-        async function fetchUsualWeekdays() {
-            const generation = ++usualGeneration;
-            usualStatus = 'loading';
+        async function fetchOperatorActivity() {
+            const generation = ++activityGeneration;
+            activityStatus = 'loading';
+            if (!activitySummary) updateOperatorCards();
             try {
                 const today = easternYmdToday();
-                const ymds = previousWeekdayYmds(today, 5);
-                const oldest = ymds[ymds.length - 1];
-                const fromRange = utcRangeForEasternYmd(oldest);
-                const todayRange = utcRangeForEasternYmd(today);
-                if (!fromRange || !todayRange || ymds.length === 0) throw new Error('Invalid usual range');
+                const range = activityWindow(today);
+                if (!range) throw new Error('Invalid activity range');
                 let allData = [];
                 let page = 0;
                 const fetchPageSize = 1000;
@@ -1355,25 +1392,25 @@
                         .order('created_at', { ascending: false })
                         .order('id', { ascending: false })
                         .range(start, end)
-                        .gte('created_at', fromRange.gte)
-                        .lt('created_at', todayRange.gte);
-                    if (generation !== usualGeneration) return;
+                        .gte('created_at', range.gte)
+                        .lt('created_at', range.lt);
+                    if (generation !== activityGeneration) return;
                     if (error) throw error;
-                    if (!Array.isArray(data)) throw new Error('Incomplete usual response');
+                    if (!Array.isArray(data)) throw new Error('Incomplete activity response');
                     allData = allData.concat(data);
                     hasMore = data.length === fetchPageSize;
                     page++;
                 }
-                if (generation !== usualGeneration) return;
-                usualByOperator = computeUsualByOperator(allData, ymds);
-                usualStatus = 'ready';
+                if (generation !== activityGeneration) return;
+                activitySummary = computeOperatorActivity(allData, today);
+                activityStatus = 'ready';
             } catch (e) {
-                if (generation !== usualGeneration) return;
-                usualByOperator = Object.create(null);
-                usualStatus = 'error';
-                console.error('Usual weekday fetch error:', e);
+                if (generation !== activityGeneration) return;
+                activitySummary = null;
+                activityStatus = 'error';
+                console.error('Operator activity fetch error:', e);
             }
-            if (generation === usualGeneration) updateOperatorCards();
+            if (generation === activityGeneration) updateOperatorCards();
         }
 
         function rangeKey() {
@@ -1398,7 +1435,6 @@
             filteredScans = [];
             totalCount.textContent = '-';
             document.getElementById('lastScanTime').textContent = '-';
-            document.getElementById('operatorCards').textContent = message;
             renderTable();
             updateExportButton();
         }
@@ -1415,6 +1451,9 @@
             const generation = fetchGeneration;
             const requestedRange = rangeKey();
             const isCurrent = () => generation === fetchGeneration && requestedRange === rangeKey();
+            // The activity strip has its own 30-day query. Start it now, in parallel, so the
+            // cards never wait for (or depend on) every page of the table's date range.
+            const activityDone = fetchOperatorActivity();
             try {
                 let allData = [];
                 let page = 0;
@@ -1475,10 +1514,6 @@
                 // Apply current filters
                 applyFilters();
 
-                // Update live operator status cards
-                updateOperatorCards();
-                await fetchUsualWeekdays();
-
                 // Update stats
                 totalCount.textContent = allScans.length.toLocaleString();
                 lastUpdate.textContent = new Date().toLocaleTimeString();
@@ -1511,85 +1546,56 @@
                 tableBody.innerHTML = '<tr><td colspan="8" class="empty">Error loading data. Please refresh.</td></tr>';
                 footerInfo.textContent = loadMessage;
             }
+            // Superseded requests returned above; a newer fetch owns the activity strip then.
+            await activityDone;
         }
 
-        // Update Live Operator Status Cards
+        // Recent operator activity cards (rolling 30 days; independent of the table filters)
+        function formatTimeAgo(lastScanMs, nowMs) {
+            if (lastScanMs == null || Number.isNaN(lastScanMs)) return { statusClass: '', text: '' };
+            const diffMins = Math.floor((nowMs - lastScanMs) / 60000);
+            if (diffMins < 15) return { statusClass: 'active-recently', text: diffMins < 1 ? 'Just now' : `${diffMins} min ago` };
+            if (diffMins < 60) return { statusClass: '', text: `${diffMins} min ago` };
+            if (diffMins < 1440) return { statusClass: 'idle', text: `${Math.floor(diffMins / 60)} hr ${diffMins % 60} min ago` };
+            const days = Math.floor(diffMins / 1440);
+            return { statusClass: 'idle', text: `${days} day${days === 1 ? '' : 's'} ago` };
+        }
+
         function updateOperatorCards() {
             const cardsContainer = document.getElementById('operatorCards');
+            const message = text => { cardsContainer.innerHTML = `<div class="no-operators-today">${escapeHtml(text)}</div>`; };
 
-            const now = new Date();
-            const todayScans = allScans;
-            document.getElementById('operatorRangeHeading').textContent = `Operator scans — ${document.getElementById('filterDateFrom').value || 'Beginning'} to ${document.getElementById('filterDateTo').value || 'Now'}`;
-
-            // If no scans today, show placeholder
-            if (todayScans.length === 0) {
-                cardsContainer.innerHTML = '<div class="no-operators-today">No scans in the selected date range.</div>';
+            if (activityStatus === 'error') {
+                message('Recent operator activity is unavailable right now. The scan table below is not affected.');
+                return;
+            }
+            if (!activitySummary) {
+                message('Loading recent operator activity...');
                 return;
             }
 
-            // Group by operator
-            const operatorData = Object.create(null);
-            todayScans.forEach(scan => {
-                const op = scan.operator_name || 'Unknown';
-                if (!operatorData[op]) {
-                    operatorData[op] = {
-                        count: 0,
-                        lastScan: null,
-                        lastSerial: '',
-                        lastPart: ''
-                    };
-                }
-                operatorData[op].count++;
+            const operators = Object.keys(activitySummary.byOperator).sort();
+            if (operators.length === 0) {
+                message('No operator scans in the last 30 days.');
+                return;
+            }
 
-                // Track most recent scan for this operator
-                const scanTime = new Date(scan.created_at);
-                if (!operatorData[op].lastScan || scanTime > operatorData[op].lastScan) {
-                    operatorData[op].lastScan = scanTime;
-                    operatorData[op].lastSerial = scan.serial_number || '';
-                    operatorData[op].lastPart = scan.part_id || '';
-                }
-            });
-
-            // Generate cards HTML
-            const sortedOperators = Object.keys(operatorData).sort();
-            let html = '';
-
-            sortedOperators.forEach(op => {
-                const data = operatorData[op];
-                const lastScanTime = data.lastScan;
-                const validLast = lastScanTime && !Number.isNaN(lastScanTime.getTime());
-                const diffMs = validLast ? (now - lastScanTime) : NaN;
-                const diffMins = Math.floor(diffMs / 60000);
-
-                let statusClass = '';
-                let timeAgoText = '';
-                if (!validLast) {
-                    timeAgoText = '';
-                } else if (diffMins < 15) {
-                    statusClass = 'active-recently';
-                    timeAgoText = diffMins < 1 ? 'Just now' : `${diffMins} min ago`;
-                } else if (diffMins < 60) {
-                    statusClass = '';
-                    timeAgoText = `${diffMins} min ago`;
-                } else {
-                    statusClass = 'idle';
-                    const diffHours = Math.floor(diffMins / 60);
-                    timeAgoText = `${diffHours} hr ${diffMins % 60} min ago`;
-                }
-
-                html += `
-                    <div class="operator-card ${statusClass}">
+            const nowMs = Date.now();
+            const usualHelp = 'Usual: average scans per weekday over the previous 5 weekdays, not counting today';
+            cardsContainer.innerHTML = operators.map(op => {
+                const data = activitySummary.byOperator[op];
+                const ago = formatTimeAgo(data.lastScan, nowMs);
+                return `
+                    <div class="operator-card ${ago.statusClass}">
                         <div class="operator-card-name">${escapeHtml(op)}</div>
-                        <div class="operator-card-stats">Scans: <strong>${Number(data.count)}</strong></div>
-                        <div class="operator-card-stats" title="Average scans on the last 5 weekdays, not including today">Usual: <strong>${escapeHtml(formatUsual(op))}</strong></div>
+                        <div class="operator-card-stats">Today: <strong>${Number(data.today)}</strong></div>
+                        <div class="operator-card-stats" title="${usualHelp}" aria-label="${usualHelp}: ${escapeHtml(formatUsual(op))}">Usual: <strong>${escapeHtml(formatUsual(op))}</strong></div>
                         <div class="operator-card-last">
-                            <span class="time-ago">${escapeHtml(timeAgoText)}</span>
+                            <span class="time-ago">${escapeHtml(ago.text)}</span>
                         </div>
                     </div>
                 `;
-            });
-
-            cardsContainer.innerHTML = html;
+            }).join('');
         }
 
         // Populate multi-select filter dropdowns (Excel-style)
