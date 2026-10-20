@@ -2,6 +2,7 @@
 // ===== SeeScan Supa1.0.1 - Supabase Migration =====
 // Supa1.0.1: Replaced Flask/Google Sheets backend with Supabase.
 //         Ported Python parsing logic (MGC, R756, etc.) to client-side JavaScript (`app.js`).
+// v8.8.13: Dashboard recent operator activity strip; cache bump only, no scanner change
 // v8.8.12: Keep 6-digit 757WM serials; idle-only tablet auto-update
 // v8.8.11: Parse MGC756NWS / MGC756NW GS1 serials to 536756-NWS / 536756-NW
 // v8.8.10: Reject incomplete PUL9000K serials before queueing
