@@ -1101,8 +1101,8 @@ def generate_qb_import_file(scans: list, report_date: datetime) -> str:
         if serial:
             part_totals[display_part]["serials"].append(serial)
 
-    # Format date as MM/DD/YYYY
-    date_str = report_date.strftime("%m/%d/%Y")
+    # Store date as a native Excel date
+    date_value = report_date.date()
 
     # Populate data rows
     row = 2
@@ -1114,7 +1114,8 @@ def generate_qb_import_file(scans: list, report_date: datetime) -> str:
         serial_ranges = format_serial_ranges(sorted(data["serials"]))
 
         # DATE
-        cell = ws.cell(row=row, column=1, value=date_str)
+        cell = ws.cell(row=row, column=1, value=date_value)
+        cell.number_format = "mm/dd/yyyy"
         cell.border = border
         cell.alignment = center_align
 
