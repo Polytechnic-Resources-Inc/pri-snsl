@@ -1300,6 +1300,14 @@
         let activitySummary = null;
         let activityStatus = 'idle';
         let activityGeneration = 0;
+        let usualByOperator = Object.create(null);
+        let usualStatus = 'idle';
+        let usualGeneration = 0;
+        const HIDDEN_OPERATOR_CARD_NAMES = new Set(['tereka', 'sarah']);
+
+        function shouldShowOperatorCard(operatorName) {
+            return !HIDDEN_OPERATOR_CARD_NAMES.has(String(operatorName || '').trim().toLowerCase());
+        }
 
         function previousWeekdayYmds(fromYmd, count = 5) {
             const days = [];
@@ -1574,7 +1582,9 @@
                 return;
             }
 
-            const operators = Object.keys(activitySummary.byOperator).sort();
+            const operators = Object.keys(activitySummary.byOperator)
+                .filter(shouldShowOperatorCard)
+                .sort();
             if (operators.length === 0) {
                 message('No operator scans in the last 30 days.');
                 return;
