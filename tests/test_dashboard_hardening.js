@@ -309,11 +309,11 @@ test('activity cards load in parallel and do not wait for the full table range',
 test('hidden former operators do not render operator cards', () => {
     const h = harness();
     h.run(`activityStatus = 'ready'; activitySummary = { usual: {}, byOperator: {
-        Tereka: { today: 1, lastScan: '2026-09-15T16:00:00.000Z' },
+        Terekea: { today: 1, lastScan: '2026-09-15T16:00:00.000Z' },
         ' SARAH ': { today: 1, lastScan: '2026-09-15T16:00:00.000Z' },
         Brenda: { today: 1, lastScan: '2026-09-15T16:00:00.000Z' }
     }}; updateOperatorCards()`);
-    assert.ok(!h.element('operatorCards').innerHTML.includes('Tereka'));
+    assert.ok(!h.element('operatorCards').innerHTML.includes('Terekea'));
     assert.ok(!h.element('operatorCards').innerHTML.includes('SARAH'));
     assert.match(h.element('operatorCards').innerHTML, /Brenda/);
 });

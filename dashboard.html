@@ -1303,7 +1303,7 @@
         let usualByOperator = Object.create(null);
         let usualStatus = 'idle';
         let usualGeneration = 0;
-        const HIDDEN_OPERATOR_CARD_NAMES = new Set(['tereka', 'sarah']);
+        const HIDDEN_OPERATOR_CARD_NAMES = new Set(['tereka', 'terekea', 'sarah']);
 
         function shouldShowOperatorCard(operatorName) {
             return !HIDDEN_OPERATOR_CARD_NAMES.has(String(operatorName || '').trim().toLowerCase());
