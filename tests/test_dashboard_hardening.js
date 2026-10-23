@@ -128,22 +128,15 @@ test('both pages use vendored Supabase, Today remains dashboard default', () => 
     }
     assert.match(harness().source, /initDashboardDates[\s\S]*easternYmdToday/);
 });
-test('last 5 weekdays skip weekends and usual divides by 5 including quiet days', () => {
+test('Usual includes active weekend dates rather than assuming weekdays', () => {
     const h = harness();
-    assert.equal(h.run('JSON.stringify(previousWeekdayYmds("2026-09-15", 5))'), JSON.stringify(['2026-09-14', '2026-09-11', '2026-09-10', '2026-09-09', '2026-09-08']));
-    assert.equal(h.run('JSON.stringify(previousWeekdayYmds("2026-09-14", 5))'), JSON.stringify(['2026-09-11', '2026-09-10', '2026-09-09', '2026-09-08', '2026-09-07']));
-    const usual = JSON.parse(h.run(`JSON.stringify(computeUsualByOperator([
-        { operator_name: 'A', created_at: '2026-09-14T16:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-14T17:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-14T18:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-14T19:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-14T20:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-13T16:00:00.000Z' },
-        { operator_name: 'B', created_at: '2026-09-11T16:00:00.000Z' }
-    ], ['2026-09-14', '2026-09-11', '2026-09-10', '2026-09-09', '2026-09-08']))`));
-    assert.equal(usual.A, 1);
-    assert.equal(usual.B, 0.2);
-    assert.equal(usual.C, undefined);
+    const s = JSON.parse(h.run(`JSON.stringify(computeOperatorActivity([
+        { operator_name: 'A', created_at: '2026-09-12T16:00:00.000Z' },
+        { operator_name: 'A', created_at: '2026-09-12T17:00:00.000Z' },
+        ...Array.from({ length: 4 }, () => ({ operator_name: 'A', created_at: '2026-09-07T16:00:00.000Z' }))
+    ], '2026-09-15'))`));
+    assert.equal(s.byOperator.A.usualDays, 2);
+    assert.equal(s.byOperator.A.usual, 3);
 });
 const ACTIVITY_SELECT = 'operator_name,created_at';
 const isActivity = c => c.table === 'scans' && c.select === ACTIVITY_SELECT;
@@ -158,9 +151,11 @@ test('activity query selects only operator and time, pages, and does not replace
     await h.run('fetchScans()');
     assert.equal(h.run('allScans.length'), 3);
     const activityCalls = h.calls.filter(isActivity);
-    assert.equal(activityCalls.length, 1);
+    assert.equal(activityCalls.length, 2);
     assert.deepEqual(activityCalls[0].orders.map(o => o[0]), ['created_at', 'id']);
     assert.deepEqual(activityCalls[0].range, [0, 999]);
+    assert.deepEqual(activityCalls[1].filters, [['operator_name', 'A'], ['created_at', '2026-08-17T04:00:00.000Z']]);
+    assert.deepEqual(activityCalls[1].range, [0, 999]);
     assert.ok(h.calls.filter(c => c.table === 'scans').every(c => c.select === '*' || c.select === ACTIVITY_SELECT));
     assert.match(h.element('operatorCards').innerHTML, /Usual:/);
     assert.match(h.element('operatorCards').innerHTML, /Today:/);
@@ -194,24 +189,92 @@ test('Today counts use the Eastern day boundary, not UTC', () => {
     assert.equal(s.byOperator.B.today, 0);
     assert.equal(s.byOperator.B.lastScan, Date.parse('2026-09-14T20:00:00.000Z'));
 });
-test('Usual stays the prior five weekdays, excluding today, divided by five', () => {
+test('Usual averages up to five prior Eastern scan-days, skipping quiet dates and today', () => {
     const h = harness();
-    const s = JSON.parse(h.run(`JSON.stringify(computeOperatorActivity([
-        ...Array.from({ length: 9 }, () => ({ operator_name: 'A', created_at: '2026-09-15T16:00:00.000Z' })),
-        { operator_name: 'A', created_at: '2026-09-14T16:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-11T16:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-13T16:00:00.000Z' },
-        { operator_name: 'A', created_at: '2026-09-07T16:00:00.000Z' }
-    ], '2026-09-15'))`));
-    assert.deepEqual(s.usualYmds, ['2026-09-14', '2026-09-11', '2026-09-10', '2026-09-09', '2026-09-08']);
+    const rowsFor = (op, ymd, count) => Array.from({ length: count }, (_, i) => ({
+        operator_name: op, created_at: `${ymd}T${String(16 + Math.floor(i / 60)).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}:00.000Z`
+    }));
+    const rowsIn = [
+        ...rowsFor('A', '2026-09-15', 9), // today is excluded
+        { operator_name: 'A', created_at: '2026-09-15T03:30:00.000Z' }, // 23:30 Eastern on Sep 14
+        ...rowsFor('A', '2026-09-14', 2), // same Eastern date: total 3
+        ...rowsFor('A', '2026-09-11', 40), // Friday counts; weekends/quiet weekdays do not count as zeroes
+        ...rowsFor('A', '2026-09-10', 5), ...rowsFor('A', '2026-09-09', 4),
+        ...rowsFor('A', '2026-09-08', 6), ...rowsFor('A', '2026-09-07', 100), // sixth prior scan-day is excluded
+        ...rowsFor('B', '2026-09-14', 2), ...rowsFor('B', '2026-09-11', 4),
+        ...rowsFor('C', '2026-09-15', 3) // no prior scan day
+    ];
+    h.context.fixtureRows = rowsIn;
+    const s = JSON.parse(h.run(`JSON.stringify(computeOperatorActivity(fixtureRows, '2026-09-15'))`));
+    assert.equal(s.byOperator.A.usualDays, 5);
+    assert.equal(s.byOperator.A.usual, 11.6); // mean(3, 40, 5, 4, 6), not median
+    assert.equal(s.byOperator.B.usualDays, 2);
+    assert.equal(s.byOperator.B.usual, 3);
+    assert.equal(s.byOperator.C.usualDays, 0);
+    assert.equal(s.byOperator.C.usual, null);
     assert.equal(s.byOperator.A.today, 9);
-    assert.equal(s.usual.A, 0.4); // 2 weekday scans / 5; today, Sunday and the 6th weekday back excluded
-    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity([{ operator_name: 'A', created_at: '2026-09-15T16:00:00.000Z' }], '2026-09-15'); updateOperatorCards();`);
+    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity(fixtureRows, '2026-09-15'); updateOperatorCards();`);
     const html = h.element('operatorCards').innerHTML;
-    assert.match(html, /Usual: <strong>0<\/strong>/);
-    assert.match(html, /previous 5 weekdays/i);
-    assert.match(html, /not (counting|including) today/i);
-    assert.match(h.source, /Recent operator activity — last 30 days/);
+    assert.match(html, /Usual: <strong>11\.6<\/strong>[\s\S]*?5 scan days/);
+    assert.match(html, /Usual: <strong>3<\/strong>[\s\S]*?only 2 scan days/);
+    assert.match(html, /Usual: <strong>—<\/strong>[\s\S]*?no earlier scan days/);
+    assert.match(h.source, /Usual = arithmetic mean/i);
+    assert.match(h.source, /quiet dates are skipped/i);
+});
+
+test('Usual history fetch goes beyond 30 days only for operators still short of five dates', async () => {
+    const today = '2026-10-24';
+    const recentRows = [
+        { operator_name: 'Brenda', created_at: '2026-10-24T16:00:00.000Z' },
+        ...['2026-10-20', '2026-10-19', '2026-10-13', '2026-10-12'].map(day => ({ operator_name: 'Brenda', created_at: `${day}T16:00:00.000Z` })),
+        ...['2026-10-20', '2026-10-19', '2026-10-13', '2026-10-12', '2026-10-09'].map(day => ({ operator_name: 'Full', created_at: `${day}T16:00:00.000Z` }))
+    ];
+    const olderRows = [
+        { operator_name: 'Brenda', created_at: '2026-09-22T16:00:00.000Z' },
+        { operator_name: 'Brenda', created_at: '2026-09-15T16:00:00.000Z' }
+    ];
+    const h = harness('dashboard.html', c => {
+        if (!isActivity(c)) return { data: [] };
+        const op = c.filters.find(([key]) => key === 'operator_name')?.[1];
+        const source = op ? olderRows : recentRows;
+        return { data: source.slice(c.range[0], c.range[1] + 1) };
+    });
+    h.run(`easternYmdToday = () => "${today}"`);
+    await h.run('fetchOperatorActivity()');
+    const historyCalls = h.calls.filter(c => isActivity(c) && c.filters.some(([key]) => key === 'operator_name'));
+    assert.equal(historyCalls.length, 1);
+    assert.deepEqual(historyCalls[0].filters, [['operator_name', 'Brenda'], ['created_at', '2026-09-25T04:00:00.000Z']]);
+    assert.deepEqual(historyCalls[0].range, [0, 999]);
+    assert.equal(historyCalls[0].select, ACTIVITY_SELECT);
+    const cards = h.element('operatorCards').innerHTML;
+    assert.match(cards, /Brenda/);
+    assert.match(cards, /Usual: <strong>1<\/strong>[\s\S]*?5 scan days/);
+});
+
+test('history pagination completes the fifth active date across a 1,000-row boundary', async () => {
+    const today = '2026-10-24';
+    const recentRows = [
+        ...['2026-10-20', '2026-10-19', '2026-10-13', '2026-10-12'].flatMap((day, i) => Array.from({ length: [6, 8, 10, 12][i] }, (_, n) => ({
+            operator_name: 'Brenda', created_at: `${day}T16:${String(n).padStart(2, '0')}:00.000Z`
+        })))
+    ];
+    const olderRows = [
+        ...Array.from({ length: 1001 }, (_, i) => ({ operator_name: 'Brenda', created_at: `2026-09-22T${String(4 + Math.floor(i / 3600)).padStart(2, '0')}:${String(Math.floor(i / 60) % 60).padStart(2, '0')}:${String(i % 60).padStart(2, '0')}.000Z` })),
+        { operator_name: 'Brenda', created_at: '2026-09-15T16:00:00.000Z' }
+    ].sort((a, b) => b.created_at.localeCompare(a.created_at));
+    const h = harness('dashboard.html', c => {
+        if (!isActivity(c)) return { data: [] };
+        const op = c.filters.find(([key]) => key === 'operator_name')?.[1];
+        const source = op ? olderRows : recentRows;
+        return { data: source.slice(c.range[0], c.range[1] + 1) };
+    });
+    h.run(`easternYmdToday = () => "${today}"`);
+    await h.run('fetchOperatorActivity()');
+    const historyCalls = h.calls.filter(c => isActivity(c) && c.filters.some(([key]) => key === 'operator_name'));
+    assert.deepEqual(historyCalls.map(c => c.range), [[0, 999], [1000, 1999]]);
+    const cards = h.element('operatorCards').innerHTML;
+    assert.match(cards, /Usual: <strong>207\.4<\/strong>[\s\S]*?5 scan days/);
+    assert.ok(!cards.includes('only 4 scan days'));
 });
 test('activity summary ignores the table date filters', async () => {
     const h = harness('dashboard.html', c => isActivity(c)
@@ -278,16 +341,22 @@ test('activity summary pages past 1,000 rows and later-page rows count', async (
         ...Array.from({ length: 1499 }, (_, i) => ({ operator_name: 'A', created_at: new Date(Date.parse('2026-09-15T20:00:00Z') - i * 1000).toISOString() })),
         { operator_name: 'Later', created_at: '2026-09-14T16:00:00.000Z' }
     ];
-    const h = harness('dashboard.html', c => isActivity(c)
-        ? { data: activityRows.slice(c.range[0], c.range[1] + 1) }
-        : { data: [] });
+    const h = harness('dashboard.html', c => {
+        if (!isActivity(c)) return { data: [] };
+        if (c.filters.some(([key]) => key === 'operator_name')) return { data: [] };
+        return { data: activityRows.slice(c.range[0], c.range[1] + 1) };
+    });
     h.run(`easternYmdToday = () => "${today}"`);
     await h.run('fetchScans()');
-    assert.deepEqual(h.calls.filter(isActivity).map(c => c.range), [[0, 999], [1000, 1999]]);
+    const activityCalls = h.calls.filter(isActivity);
+    const recentCalls = activityCalls.filter(c => !c.filters.some(([key]) => key === 'operator_name'));
+    const historyCalls = activityCalls.filter(c => c.filters.some(([key]) => key === 'operator_name'));
+    assert.deepEqual(recentCalls.map(c => c.range), [[0, 999], [1000, 1999]]);
+    assert.deepEqual(historyCalls.map(c => c.filters.find(([key]) => key === 'operator_name')[1]), ['A', 'Later']);
     const html = h.element('operatorCards').innerHTML;
     assert.match(html, /Later/);
     assert.match(html, /A<\/div>\s*<div class="operator-card-stats">Today: <strong>1499<\/strong>/);
-    assert.match(html, /Later<\/div>\s*<div class="operator-card-stats">Today: <strong>0<\/strong>[\s\S]*?Usual: <strong>0\.2<\/strong>/);
+    assert.match(html, /Later<\/div>\s*<div class="operator-card-stats">Today: <strong>0<\/strong>[\s\S]*?Usual: <strong>1<\/strong>[\s\S]*?only 1 scan day/);
 });
 test('activity cards load in parallel and do not wait for the full table range', async () => {
     let releaseTable;
@@ -304,7 +373,9 @@ test('activity cards load in parallel and do not wait for the full table range',
     releaseTable({ data: rows(2) });
     await pending;
     assert.equal(h.run('loadState'), 'complete');
-    assert.equal(h.calls.filter(isActivity).length, 1);
+    const activityCalls = h.calls.filter(isActivity);
+    assert.equal(activityCalls.length, 2);
+    assert.deepEqual(activityCalls[1].filters, [['operator_name', 'Fast Op'], ['created_at', h.run('utcRangeForEasternYmd(addDaysYmd(easternYmdToday(), -29)).gte')]]);
 });
 test('hidden former operators do not render operator cards', () => {
     const h = harness();

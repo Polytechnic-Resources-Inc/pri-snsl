@@ -951,6 +951,12 @@
             font-size: 15px;
         }
 
+        .operator-card-basis {
+            display: block;
+            font-size: 11px;
+            color: #334155;
+        }
+
         .operator-card-last {
             font-size: 11px;
             color: #64748b;
@@ -1008,7 +1014,7 @@
         <div class="operator-cards-header">
             <div class="pulse"></div>
             <span id="operatorRangeHeading">Recent operator activity — last 30 days</span>
-            <span class="operator-cards-note">Usual = average per weekday, previous 5 weekdays (not today)</span>
+            <span class="operator-cards-note">Usual = arithmetic mean scans per scan-day across up to 5 earlier Eastern dates with scans; quiet dates are skipped and today is excluded. For comparison only.</span>
         </div>
         <div class="operator-cards" id="operatorCards">
             <div class="no-operators-today">Loading recent operator activity...</div>
@@ -1309,39 +1315,10 @@
             return !HIDDEN_OPERATOR_CARD_NAMES.has(String(operatorName || '').trim().toLowerCase());
         }
 
-        function previousWeekdayYmds(fromYmd, count = 5) {
-            const days = [];
-            let cursor = fromYmd;
-            let guard = 0;
-            while (days.length < count && guard++ < 21) {
-                cursor = addDaysYmd(cursor, -1);
-                const [year, month, day] = String(cursor).split('-').map(Number);
-                if (!year || !month || !day) break;
-                const dow = new Date(Date.UTC(year, month - 1, day)).getUTCDay();
-                if (dow !== 0 && dow !== 6) days.push(cursor);
-            }
-            return days;
-        }
-
         function easternYmdFromIso(iso) {
             const d = new Date(iso);
             if (Number.isNaN(d.getTime())) return '';
             return d.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-        }
-
-        function computeUsualByOperator(rows, ymds) {
-            const allowed = new Set(ymds);
-            const n = ymds.length || 1;
-            const totals = Object.create(null);
-            for (const row of rows || []) {
-                const day = easternYmdFromIso(row.created_at);
-                if (!allowed.has(day)) continue;
-                const op = row.operator_name || 'Unknown';
-                totals[op] = (totals[op] || 0) + 1;
-            }
-            const usual = Object.create(null);
-            for (const op of Object.keys(totals)) usual[op] = totals[op] / n;
-            return usual;
         }
 
         // Window = today plus the previous 29 Eastern calendar days, starting at Eastern midnight.
@@ -1353,30 +1330,81 @@
             return { cutoffYmd, gte: fromRange.gte, lt: todayRange.lt };
         }
 
+        const USUAL_DAYS = 5;
+
         function computeOperatorActivity(rows, todayYmd) {
             const range = activityWindow(todayYmd);
-            const usualYmds = previousWeekdayYmds(todayYmd, 5);
             const byOperator = Object.create(null);
-            const inWindow = [];
+            const dailyByOperator = Object.create(null);
             for (const row of rows || []) {
                 const day = easternYmdFromIso(row.created_at);
-                if (!range || !day || day < range.cutoffYmd || day > todayYmd) continue;
-                inWindow.push(row);
+                if (!day || day > todayYmd) continue;
                 const op = row.operator_name || 'Unknown';
+                if (day < todayYmd) {
+                    const daily = dailyByOperator[op] || (dailyByOperator[op] = Object.create(null));
+                    daily[day] = (daily[day] || 0) + 1;
+                }
+                if (!range || day < range.cutoffYmd) continue;
                 const entry = byOperator[op] || (byOperator[op] = { today: 0, lastScan: null });
                 if (day === todayYmd) entry.today++;
-                const t = Date.parse(row.created_at);
-                if (entry.lastScan == null || t > entry.lastScan) entry.lastScan = t;
+                const timestamp = Date.parse(row.created_at);
+                if (entry.lastScan == null || timestamp > entry.lastScan) entry.lastScan = timestamp;
             }
-            return { todayYmd, byOperator, usualYmds, usual: computeUsualByOperator(inWindow, usualYmds) };
+            for (const op of Object.keys(byOperator)) {
+                const daily = dailyByOperator[op] || Object.create(null);
+                const days = Object.keys(daily).sort().reverse().slice(0, USUAL_DAYS);
+                byOperator[op].usualDays = days.length;
+                byOperator[op].usual = days.length
+                    ? days.reduce((sum, day) => sum + daily[day], 0) / days.length
+                    : null;
+            }
+            return { todayYmd, byOperator };
         }
 
-        function formatUsual(op) {
-            if (!activitySummary) return '—';
-            const value = activitySummary.usual[op];
-            const n = value == null ? 0 : value;
-            if (Number.isInteger(n)) return String(n);
-            return String(Math.round(n * 10) / 10);
+        function activePriorDays(rows, operatorName, todayYmd) {
+            return new Set((rows || [])
+                .filter(row => (row.operator_name || 'Unknown') === operatorName)
+                .map(row => easternYmdFromIso(row.created_at))
+                .filter(day => day && day < todayYmd)).size;
+        }
+
+        async function fetchOlderOperatorScans(operatorName, todayYmd, cutoffUtc, cutoffYmd, allData, generation) {
+            let page = 0;
+            const fetchPageSize = 1000;
+            let hasMore = true;
+            while (hasMore && activePriorDays(allData, operatorName, todayYmd) < USUAL_DAYS + 1) {
+                const start = page * fetchPageSize;
+                const end = start + fetchPageSize - 1;
+                const { data, error } = await supabaseClient
+                    .from('scans')
+                    .select('operator_name,created_at')
+                    .eq('operator_name', operatorName)
+                    .order('created_at', { ascending: false })
+                    .order('id', { ascending: false })
+                    .range(start, end)
+                    .lt('created_at', cutoffUtc);
+                if (generation !== activityGeneration) return;
+                if (error) throw error;
+                if (!Array.isArray(data)) throw new Error('Incomplete usual history response');
+                allData.push(...data.filter(row => {
+                    const day = easternYmdFromIso(row.created_at);
+                    return day && day < cutoffYmd;
+                }));
+                hasMore = data.length === fetchPageSize;
+                page++;
+            }
+        }
+
+        function formatUsual(entry) {
+            if (!entry || entry.usual == null) return '—';
+            return Number.isInteger(entry.usual) ? String(entry.usual) : String(Math.round(entry.usual * 10) / 10);
+        }
+
+        function formatUsualBasis(entry) {
+            const days = entry ? entry.usualDays : 0;
+            if (!days) return 'no earlier scan days';
+            const label = `${days} scan day${days === 1 ? '' : 's'}`;
+            return days < USUAL_DAYS ? `only ${label}` : label;
         }
 
         async function fetchOperatorActivity() {
@@ -1410,6 +1438,12 @@
                     page++;
                 }
                 if (generation !== activityGeneration) return;
+                const recentSummary = computeOperatorActivity(allData, today);
+                for (const [operatorName, entry] of Object.entries(recentSummary.byOperator)) {
+                    if (entry.usualDays >= USUAL_DAYS) continue;
+                    await fetchOlderOperatorScans(operatorName, today, range.gte, range.cutoffYmd, allData, generation);
+                    if (generation !== activityGeneration) return;
+                }
                 activitySummary = computeOperatorActivity(allData, today);
                 activityStatus = 'ready';
             } catch (e) {
@@ -1591,7 +1625,7 @@
             }
 
             const nowMs = Date.now();
-            const usualHelp = 'Usual: average scans per weekday over the previous 5 weekdays, not counting today';
+            const usualHelp = 'Usual: arithmetic mean scans per scan-day across up to 5 of this operator’s most recent earlier Eastern dates with scans. Dates without scans and today are excluded; for comparison only.';
             cardsContainer.innerHTML = operators.map(op => {
                 const data = activitySummary.byOperator[op];
                 const ago = formatTimeAgo(data.lastScan, nowMs);
@@ -1599,7 +1633,7 @@
                     <div class="operator-card ${ago.statusClass}">
                         <div class="operator-card-name">${escapeHtml(op)}</div>
                         <div class="operator-card-stats">Today: <strong>${Number(data.today)}</strong></div>
-                        <div class="operator-card-stats" title="${usualHelp}" aria-label="${usualHelp}: ${escapeHtml(formatUsual(op))}">Usual: <strong>${escapeHtml(formatUsual(op))}</strong></div>
+                        <div class="operator-card-stats" title="${usualHelp}" aria-label="${usualHelp}: ${escapeHtml(formatUsual(data))}, ${escapeHtml(formatUsualBasis(data))}">Usual: <strong>${escapeHtml(formatUsual(data))}</strong><span class="operator-card-basis">${escapeHtml(formatUsualBasis(data))}</span></div>
                         <div class="operator-card-last">
                             <span class="time-ago">${escapeHtml(ago.text)}</span>
                         </div>
