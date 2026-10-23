@@ -4,7 +4,7 @@
 
 This document describes the current barcode validation and parsing behavior used by the scanner runtime. The active runtime source is `app.js`. Product rule reference data is also present in `product_rules_master_truth.js`, but the browser behavior depends on what is loaded by the deployed app.
 
-Current app release version: `v8.8.13`.
+Current app release version: `v8.8.14`.
 
 ## Purpose
 
