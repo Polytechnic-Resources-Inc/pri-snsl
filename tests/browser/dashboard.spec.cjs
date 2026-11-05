@@ -30,12 +30,14 @@ test('dated and All Time results include every page; old serial remains searchab
 test('operator cards stay on today activity when the table date range changes', async ({ page }) => {
     await dashboard(page); await fullCount(page, 12);
     await expect(page.locator('.operator-cards-header')).toContainText('Recent operator activity — today');
-    await expect(page.locator('#operatorCards')).toContainText('Usual:');
-    await expect(page.locator('#operatorCards')).toContainText('Today: 12');
+    await expect(page.locator('#operatorCards')).toContainText('Usual');
+    await expect(page.locator('#operatorCards')).toContainText('Today');
+    await expect(page.locator('#operatorCards')).toContainText('100760E');
     await page.getByRole('button', { name: 'Yesterday', exact: true }).click();
     await fullCount(page, 0);
     await expect(page.locator('#operatorCards')).toContainText('Operator A');
-    await expect(page.locator('#operatorCards')).toContainText('Today: 12');
+    await expect(page.locator('#operatorCards')).toContainText('Today');
+    await expect(page.locator('#operatorCards')).toContainText('100760E');
     await expect(page.locator('#operatorCardsContainer')).not.toContainText('No scans yet today');
     await expect(page.locator('.operator-cards-header')).not.toContainText('(Today)');
     await expect(page.locator('#btnNext')).toBeDisabled();

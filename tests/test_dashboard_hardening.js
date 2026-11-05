@@ -79,15 +79,17 @@ test('loading, errors, date edits invalidate exports and stale requests cannot w
 test('cards come from the activity summary; all render surfaces escape hostile fields and IDs', () => {
     const h = harness(); h.context.payload = hostile;
     h.run(`allScans = filteredScans = [{id: '1);alert(1)', created_at: payload, serial_number: payload, part_id: payload, operator_name: payload, station_id: payload, batch_comment: payload, dashboard_notes: payload}]; renderTable(); populateFilters();`);
-    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity([{ operator_name: payload, created_at: new Date().toISOString() }], easternYmdToday()); updateOperatorCards();`);
+    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity([{ operator_name: payload, part_id: payload, created_at: new Date().toISOString() }], easternYmdToday()); updateOperatorCards();`);
     for (const id of ['tableBody', 'operatorCards', 'operatorDropdown', 'stationDropdown', 'partDropdown']) {
         assert.ok(!h.element(id).innerHTML.includes('<img'), id);
         assert.ok(!h.element(id).innerHTML.includes('1);alert(1)'), id);
     }
     assert.match(h.element('operatorCards').innerHTML, /&lt;img/);
-    assert.match(h.element('operatorCards').innerHTML, /Today:/);
+    assert.match(h.element('operatorCards').innerHTML, /operator-card-label">Today/);
     assert.ok(!h.element('operatorCards').innerHTML.includes('Scans:'));
-    assert.match(h.element('operatorCards').innerHTML, /Usual:/);
+    assert.match(h.element('operatorCards').innerHTML, /operator-card-label">Usual/);
+    assert.match(h.element('operatorCards').innerHTML, /operator-card-label">SKU/);
+    assert.ok(!h.element('operatorCards').innerHTML.includes('scan days'));
     assert.ok(!h.element('operatorCards').innerHTML.includes('class="serial"'));
     h.run('allScans[0].id = 1; openDeleteModal(1)');
     assert.ok(!h.element('deleteInfo').innerHTML.includes('<img'));
@@ -138,10 +140,10 @@ test('Usual includes active weekend dates rather than assuming weekdays', () => 
     assert.equal(s.byOperator.A.usualDays, 2);
     assert.equal(s.byOperator.A.usual, 3);
 });
-const ACTIVITY_SELECT = 'operator_name,created_at';
+const ACTIVITY_SELECT = 'operator_name,created_at,part_id';
 const isActivity = c => c.table === 'scans' && c.select === ACTIVITY_SELECT;
 function filterValue(call, key, index) { return call.filters.filter(([k]) => k === key)[index ?? 0]?.[1]; }
-test('activity query selects only operator and time, pages, and does not replace loaded scans', async () => {
+test('activity query selects operator, SKU and time, pages, and does not replace loaded scans', async () => {
     const h = harness('dashboard.html', c => isActivity(c)
         ? { data: [{ operator_name: 'A', created_at: '2026-09-14T16:00:00.000Z' }] }
         : { data: rows(3) });
@@ -212,8 +214,7 @@ test('Usual averages up to five prior Eastern scan-days, skipping quiet dates an
     assert.equal(s.byOperator.C.usualDays, 0);
     assert.equal(s.byOperator.C.usual, null);
     assert.equal(s.byOperator.A.today, 9);
-    assert.match(h.source, /Usual = arithmetic mean/i);
-    assert.match(h.source, /quiet dates are skipped/i);
+    assert.ok(!h.source.includes('operator-cards-note'));
 });
 
 test('Usual history fetch goes beyond 30 days only for operators still short of five dates', async () => {
@@ -313,7 +314,7 @@ test('empty, loading and error states are explicit; table and summary fail indep
         : { error: new Error('table fixture') });
     await tableDown.run('fetchScans()');
     assert.equal(tableDown.run('loadState'), 'error');
-    assert.match(tableDown.element('operatorCards').innerHTML, /Today: <strong>1<\/strong>/);
+    assert.match(tableDown.element('operatorCards').innerHTML, /operator-card-label">Today<\/span><strong class="operator-card-metric-value">1<\/strong>/);
 });
 test('cards hide yesterday and operators idle for more than six hours', () => {
     const h = harness();
@@ -359,7 +360,7 @@ test('activity cards load in parallel and do not wait for the full table range',
     for (let i = 0; i < 10; i++) await new Promise(r => setImmediate(r));
     assert.equal(h.run('loadState'), 'loading');
     assert.match(h.element('operatorCards').innerHTML, /Fast Op/);
-    assert.match(h.element('operatorCards').innerHTML, /Today: <strong>1<\/strong>/);
+    assert.match(h.element('operatorCards').innerHTML, /operator-card-label">Today<\/span><strong class="operator-card-metric-value">1<\/strong>/);
     releaseTable({ data: rows(2) });
     await pending;
     assert.equal(h.run('loadState'), 'complete');

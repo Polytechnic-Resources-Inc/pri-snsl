@@ -881,13 +881,6 @@
             animation: pulse 2s infinite;
         }
 
-        .operator-cards-note {
-            flex: 1 1 260px;
-            font-size: 12px;
-            font-weight: 400;
-            color: rgba(255, 255, 255, 0.75);
-        }
-
         @keyframes pulse {
 
             0%,
@@ -913,12 +906,15 @@
         .operator-card {
             background: white;
             border-radius: 6px;
-            padding: 8px 10px;
-            min-width: 130px;
-            max-width: 140px;
+            padding: 10px 12px;
+            min-width: 162px;
+            max-width: 174px;
+            min-height: 116px;
             box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
             border-left: 3px solid #3b82f6;
             flex-shrink: 0;
+            display: flex;
+            flex-direction: column;
         }
 
         .operator-card.active-recently {
@@ -934,60 +930,77 @@
             font-weight: 700;
             font-size: 14px;
             color: #1e3a5f;
-            margin-bottom: 2px;
+            line-height: 18px;
+            margin-bottom: 8px;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-        .operator-card-stats {
-            font-size: 12px;
-            color: #64748b;
-            margin-bottom: 4px;
+        .operator-card-sku {
+            background: #f1f5f9;
+            border-radius: 4px;
+            padding: 5px 7px;
+            margin-bottom: 9px;
+            min-width: 0;
         }
 
-        .operator-card-stats strong {
-            color: #1e293b;
-            font-size: 15px;
-        }
-
-        .operator-card-basis {
+        .operator-card-label {
             display: block;
-            font-size: 11px;
-            color: #334155;
+            color: #64748b;
+            font-size: 10px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            line-height: 12px;
+            text-transform: uppercase;
+        }
+
+        .operator-card-sku-value {
+            display: block;
+            color: #0f3d67;
+            font-family: 'SF Mono', Monaco, Consolas, monospace;
+            font-size: 13px;
+            font-weight: 700;
+            line-height: 16px;
+            margin-top: 1px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .operator-card-metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px;
+            margin-bottom: 8px;
+        }
+
+        .operator-card-metric {
+            min-width: 0;
+        }
+
+        .operator-card-metric-value {
+            color: #1e293b;
+            display: block;
+            font-size: 17px;
+            font-weight: 700;
+            line-height: 20px;
+            margin-top: 1px;
         }
 
         .operator-card-last {
-            font-size: 11px;
+            border-top: 1px solid #e2e8f0;
             color: #64748b;
-            line-height: 1.5;
-        }
-
-        .operator-card-last .serial {
-            font-family: 'SF Mono', Monaco, Consolas, monospace;
-            color: #059669;
-            font-weight: 600;
-            display: block;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
-        }
-
-        .operator-card-last .part {
-            font-family: 'SF Mono', Monaco, Consolas, monospace;
-            color: #3b82f6;
-            font-weight: 600;
-            display: block;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+            font-size: 11px;
+            line-height: 16px;
+            margin-top: auto;
+            padding-top: 5px;
         }
 
         .operator-card-last .time-ago {
-            color: #94a3b8;
+            color: #64748b;
             font-style: italic;
             display: block;
-            margin-top: 2px;
         }
 
         .no-operators-today {
@@ -1014,7 +1027,6 @@
         <div class="operator-cards-header">
             <div class="pulse"></div>
             <span id="operatorRangeHeading">Recent operator activity — today</span>
-            <span class="operator-cards-note">Cards hide after 6 hours without a scan and return with the next scan. Usual = arithmetic mean scans per scan-day across up to 5 earlier Eastern dates with scans; quiet dates are skipped and today is excluded. For comparison only.</span>
         </div>
         <div class="operator-cards" id="operatorCards">
             <div class="no-operators-today">Loading recent operator activity...</div>
@@ -1346,10 +1358,13 @@
                     daily[day] = (daily[day] || 0) + 1;
                 }
                 if (!range || day < range.cutoffYmd) continue;
-                const entry = byOperator[op] || (byOperator[op] = { today: 0, lastScan: null });
+                const entry = byOperator[op] || (byOperator[op] = { today: 0, lastScan: null, partId: null });
                 if (day === todayYmd) entry.today++;
                 const timestamp = Date.parse(row.created_at);
-                if (entry.lastScan == null || timestamp > entry.lastScan) entry.lastScan = timestamp;
+                if (Number.isFinite(timestamp) && (entry.lastScan == null || timestamp > entry.lastScan)) {
+                    entry.lastScan = timestamp;
+                    entry.partId = row.part_id || null;
+                }
             }
             for (const op of Object.keys(byOperator)) {
                 const daily = dailyByOperator[op] || Object.create(null);
@@ -1378,7 +1393,7 @@
                 const end = start + fetchPageSize - 1;
                 const { data, error } = await supabaseClient
                     .from('scans')
-                    .select('operator_name,created_at')
+                    .select('operator_name,created_at,part_id')
                     .eq('operator_name', operatorName)
                     .order('created_at', { ascending: false })
                     .order('id', { ascending: false })
@@ -1425,7 +1440,7 @@
                     const end = start + fetchPageSize - 1;
                     const { data, error } = await supabaseClient
                         .from('scans')
-                        .select('operator_name,created_at')
+                        .select('operator_name,created_at,part_id')
                         .order('created_at', { ascending: false })
                         .order('id', { ascending: false })
                         .range(start, end)
@@ -1643,8 +1658,11 @@
                 return `
                     <div class="operator-card ${ago.statusClass}">
                         <div class="operator-card-name">${escapeHtml(op)}</div>
-                        <div class="operator-card-stats">Today: <strong>${Number(data.today)}</strong></div>
-                        <div class="operator-card-stats" title="${usualHelp}" aria-label="${usualHelp}: ${escapeHtml(formatUsual(data))}, ${escapeHtml(formatUsualBasis(data))}">Usual: <strong>${escapeHtml(formatUsual(data))}</strong><span class="operator-card-basis">${escapeHtml(formatUsualBasis(data))}</span></div>
+                        <div class="operator-card-sku"><span class="operator-card-label">SKU</span><span class="operator-card-sku-value">${escapeHtml(data.partId || '—')}</span></div>
+                        <div class="operator-card-metrics">
+                            <div class="operator-card-metric"><span class="operator-card-label">Today</span><strong class="operator-card-metric-value">${Number(data.today)}</strong></div>
+                            <div class="operator-card-metric" title="${usualHelp}" aria-label="${usualHelp}: ${escapeHtml(formatUsual(data))}"><span class="operator-card-label">Usual</span><strong class="operator-card-metric-value">${escapeHtml(formatUsual(data))}</strong></div>
+                        </div>
                         <div class="operator-card-last">
                             <span class="time-ago">${escapeHtml(ago.text)}</span>
                         </div>
