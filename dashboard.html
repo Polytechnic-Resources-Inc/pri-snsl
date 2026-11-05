@@ -1013,8 +1013,8 @@
     <div class="operator-cards-container" id="operatorCardsContainer">
         <div class="operator-cards-header">
             <div class="pulse"></div>
-            <span id="operatorRangeHeading">Recent operator activity — last 30 days</span>
-            <span class="operator-cards-note">Usual = arithmetic mean scans per scan-day across up to 5 earlier Eastern dates with scans; quiet dates are skipped and today is excluded. For comparison only.</span>
+            <span id="operatorRangeHeading">Recent operator activity — today</span>
+            <span class="operator-cards-note">Cards hide after 6 hours without a scan and return with the next scan. Usual = arithmetic mean scans per scan-day across up to 5 earlier Eastern dates with scans; quiet dates are skipped and today is excluded. For comparison only.</span>
         </div>
         <div class="operator-cards" id="operatorCards">
             <div class="no-operators-today">Loading recent operator activity...</div>
@@ -1303,6 +1303,7 @@
         let loadMessage = 'Choose a date range.';
         // Recent operator activity strip: its own rolling 30-day query, independent of the table filters.
         const ACTIVITY_DAYS = 30;
+        const OPERATOR_ACTIVITY_MAX_IDLE_MS = 6 * 60 * 60 * 1000;
         let activitySummary = null;
         let activityStatus = 'idle';
         let activityGeneration = 0;
@@ -1592,7 +1593,7 @@
             await activityDone;
         }
 
-        // Recent operator activity cards (rolling 30 days; independent of the table filters)
+        // Recent operator activity cards show only operators active today and within the last six hours
         function formatTimeAgo(lastScanMs, nowMs) {
             if (lastScanMs == null || Number.isNaN(lastScanMs)) return { statusClass: '', text: '' };
             const diffMins = Math.floor((nowMs - lastScanMs) / 60000);
@@ -1601,6 +1602,14 @@
             if (diffMins < 1440) return { statusClass: 'idle', text: `${Math.floor(diffMins / 60)} hr ${diffMins % 60} min ago` };
             const days = Math.floor(diffMins / 1440);
             return { statusClass: 'idle', text: `${days} day${days === 1 ? '' : 's'} ago` };
+        }
+
+        function isCurrentOperatorActivity(data, todayYmd, nowMs) {
+            if (!data || data.lastScan == null || !Number.isFinite(data.lastScan)) return false;
+            const scanDate = new Date(data.lastScan);
+            if (Number.isNaN(scanDate.getTime()) || easternYmdFromIso(scanDate.toISOString()) !== todayYmd) return false;
+            const idleMs = nowMs - data.lastScan;
+            return idleMs >= 0 && idleMs <= OPERATOR_ACTIVITY_MAX_IDLE_MS;
         }
 
         function updateOperatorCards() {
@@ -1616,15 +1625,17 @@
                 return;
             }
 
+            const todayYmd = activitySummary.todayYmd || easternYmdToday();
+            const nowMs = Date.now();
             const operators = Object.keys(activitySummary.byOperator)
                 .filter(shouldShowOperatorCard)
+                .filter(op => isCurrentOperatorActivity(activitySummary.byOperator[op], todayYmd, nowMs))
                 .sort();
             if (operators.length === 0) {
-                message('No operator scans in the last 30 days.');
+                message('No operator activity in the last 6 hours.');
                 return;
             }
 
-            const nowMs = Date.now();
             const usualHelp = 'Usual: arithmetic mean scans per scan-day across up to 5 of this operator’s most recent earlier Eastern dates with scans. Dates without scans and today are excluded; for comparison only.';
             cardsContainer.innerHTML = operators.map(op => {
                 const data = activitySummary.byOperator[op];

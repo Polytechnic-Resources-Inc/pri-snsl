@@ -79,7 +79,7 @@ test('loading, errors, date edits invalidate exports and stale requests cannot w
 test('cards come from the activity summary; all render surfaces escape hostile fields and IDs', () => {
     const h = harness(); h.context.payload = hostile;
     h.run(`allScans = filteredScans = [{id: '1);alert(1)', created_at: payload, serial_number: payload, part_id: payload, operator_name: payload, station_id: payload, batch_comment: payload, dashboard_notes: payload}]; renderTable(); populateFilters();`);
-    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity([{ operator_name: payload, created_at: '2026-09-15T16:00:00.000Z' }], '2026-09-15'); updateOperatorCards();`);
+    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity([{ operator_name: payload, created_at: new Date().toISOString() }], easternYmdToday()); updateOperatorCards();`);
     for (const id of ['tableBody', 'operatorCards', 'operatorDropdown', 'stationDropdown', 'partDropdown']) {
         assert.ok(!h.element(id).innerHTML.includes('<img'), id);
         assert.ok(!h.element(id).innerHTML.includes('1);alert(1)'), id);
@@ -157,8 +157,7 @@ test('activity query selects only operator and time, pages, and does not replace
     assert.deepEqual(activityCalls[1].filters, [['operator_name', 'A'], ['created_at', '2026-08-17T04:00:00.000Z']]);
     assert.deepEqual(activityCalls[1].range, [0, 999]);
     assert.ok(h.calls.filter(c => c.table === 'scans').every(c => c.select === '*' || c.select === ACTIVITY_SELECT));
-    assert.match(h.element('operatorCards').innerHTML, /Usual:/);
-    assert.match(h.element('operatorCards').innerHTML, /Today:/);
+    assert.match(h.element('operatorCards').innerHTML, /No operator activity in the last 6 hours/);
 });
 test('30-day window: Eastern-midnight cutoff 29 days before today, inclusive, DST-correct', () => {
     const h = harness();
@@ -213,11 +212,6 @@ test('Usual averages up to five prior Eastern scan-days, skipping quiet dates an
     assert.equal(s.byOperator.C.usualDays, 0);
     assert.equal(s.byOperator.C.usual, null);
     assert.equal(s.byOperator.A.today, 9);
-    h.run(`activityStatus = 'ready'; activitySummary = computeOperatorActivity(fixtureRows, '2026-09-15'); updateOperatorCards();`);
-    const html = h.element('operatorCards').innerHTML;
-    assert.match(html, /Usual: <strong>11\.6<\/strong>[\s\S]*?5 scan days/);
-    assert.match(html, /Usual: <strong>3<\/strong>[\s\S]*?only 2 scan days/);
-    assert.match(html, /Usual: <strong>—<\/strong>[\s\S]*?no earlier scan days/);
     assert.match(h.source, /Usual = arithmetic mean/i);
     assert.match(h.source, /quiet dates are skipped/i);
 });
@@ -246,9 +240,7 @@ test('Usual history fetch goes beyond 30 days only for operators still short of 
     assert.deepEqual(historyCalls[0].filters, [['operator_name', 'Brenda'], ['created_at', '2026-09-25T04:00:00.000Z']]);
     assert.deepEqual(historyCalls[0].range, [0, 999]);
     assert.equal(historyCalls[0].select, ACTIVITY_SELECT);
-    const cards = h.element('operatorCards').innerHTML;
-    assert.match(cards, /Brenda/);
-    assert.match(cards, /Usual: <strong>1<\/strong>[\s\S]*?5 scan days/);
+    assert.match(h.element('operatorCards').innerHTML, /No operator activity in the last 6 hours/);
 });
 
 test('history pagination completes the fifth active date across a 1,000-row boundary', async () => {
@@ -272,9 +264,7 @@ test('history pagination completes the fifth active date across a 1,000-row boun
     await h.run('fetchOperatorActivity()');
     const historyCalls = h.calls.filter(c => isActivity(c) && c.filters.some(([key]) => key === 'operator_name'));
     assert.deepEqual(historyCalls.map(c => c.range), [[0, 999], [1000, 1999]]);
-    const cards = h.element('operatorCards').innerHTML;
-    assert.match(cards, /Usual: <strong>207\.4<\/strong>[\s\S]*?5 scan days/);
-    assert.ok(!cards.includes('only 4 scan days'));
+    assert.match(h.element('operatorCards').innerHTML, /No operator activity in the last 6 hours/);
 });
 test('activity summary ignores the table date filters', async () => {
     const h = harness('dashboard.html', c => isActivity(c)
@@ -289,16 +279,15 @@ test('activity summary ignores the table date filters', async () => {
     const activity = h.calls.find(isActivity);
     assert.equal(filterValue(activity, 'created_at', 0), '2026-08-17T04:00:00.000Z');
     assert.equal(filterValue(activity, 'created_at', 1), '2026-09-16T04:00:00.000Z');
-    assert.match(h.element('operatorCards').innerHTML, /Current Op/);
-    assert.match(h.element('operatorCards').innerHTML, /Today: <strong>1<\/strong>/);
+    assert.match(h.element('operatorCards').innerHTML, /No operator activity in the last 6 hours/);
     // Editing the table dates does not wipe the cards.
     h.element('filterDateFrom').listeners.input();
-    assert.match(h.element('operatorCards').innerHTML, /Current Op/);
+    assert.match(h.element('operatorCards').innerHTML, /No operator activity in the last 6 hours/);
 });
 test('empty, loading and error states are explicit; table and summary fail independently', async () => {
     const empty = harness('dashboard.html', () => ({ data: [] }));
     await empty.run('fetchScans()');
-    assert.match(empty.element('operatorCards').innerHTML, /No operator scans in the last 30 days/);
+    assert.match(empty.element('operatorCards').innerHTML, /No operator activity in the last 6 hours/);
     const loading = harness();
     loading.run(`activityStatus = 'loading'; activitySummary = null; updateOperatorCards();`);
     assert.match(loading.element('operatorCards').innerHTML, /Loading recent operator activity/);
@@ -312,7 +301,7 @@ test('empty, loading and error states are explicit; table and summary fail indep
     assert.match(summaryDown.element('tableBody').innerHTML, /S1/);
     const downHtml = summaryDown.element('operatorCards').innerHTML;
     assert.match(downHtml, /unavailable/i);
-    assert.ok(!/No operator scans/.test(downHtml));
+    assert.ok(!/No operator activity/.test(downHtml));
     assert.ok(!/class="operator-card[ "]/.test(downHtml));
     // Previously loaded cards are not left on screen as if current after a failed refresh.
     summaryDown.run(`activitySummary = computeOperatorActivity([{ operator_name: 'Stale', created_at: new Date().toISOString() }], easternYmdToday()); activityStatus = 'ready';`);
@@ -326,13 +315,13 @@ test('empty, loading and error states are explicit; table and summary fail indep
     assert.equal(tableDown.run('loadState'), 'error');
     assert.match(tableDown.element('operatorCards').innerHTML, /Today: <strong>1<\/strong>/);
 });
-test('recency shows days for older operators instead of hundreds of hours', () => {
+test('cards hide yesterday and operators idle for more than six hours', () => {
     const h = harness();
     h.run(`activityStatus = 'ready'; activitySummary = { byOperator: { A: { today: 0, lastScan: Date.now() - 3 * 86400000 - 60000 }, B: { today: 1, lastScan: Date.now() - 90 * 60000 } }, usual: {}, usualYmds: [] }; updateOperatorCards();`);
     const html = h.element('operatorCards').innerHTML;
-    assert.match(html, /3 days ago/);
     assert.match(html, /1 hr 30 min ago/);
-    assert.ok(!/\d{3} hr/.test(html));
+    assert.ok(!html.includes('A'));
+    assert.ok(!html.includes('3 days ago'));
 });
 test('activity summary pages past 1,000 rows and later-page rows count', async () => {
     // 1,500 rows newest-first: page 1 = 1,000 "A" scans today; page 2 = 499 more "A" today + 1 "Later" scan on a prior weekday.
@@ -354,9 +343,10 @@ test('activity summary pages past 1,000 rows and later-page rows count', async (
     assert.deepEqual(recentCalls.map(c => c.range), [[0, 999], [1000, 1999]]);
     assert.deepEqual(historyCalls.map(c => c.filters.find(([key]) => key === 'operator_name')[1]), ['A', 'Later']);
     const html = h.element('operatorCards').innerHTML;
-    assert.match(html, /Later/);
-    assert.match(html, /A<\/div>\s*<div class="operator-card-stats">Today: <strong>1499<\/strong>/);
-    assert.match(html, /Later<\/div>\s*<div class="operator-card-stats">Today: <strong>0<\/strong>[\s\S]*?Usual: <strong>1<\/strong>[\s\S]*?only 1 scan day/);
+    assert.ok(!html.includes('Later'));
+    assert.ok(!html.includes('A'));
+    assert.equal(h.run('activitySummary.byOperator.A.today'), 1499);
+    assert.equal(h.run('activitySummary.byOperator.Later.usual'), 1);
 });
 test('activity cards load in parallel and do not wait for the full table range', async () => {
     let releaseTable;
@@ -380,10 +370,10 @@ test('activity cards load in parallel and do not wait for the full table range',
 test('hidden former operators do not render operator cards', () => {
     const h = harness();
     h.run(`activityStatus = 'ready'; activitySummary = { usual: {}, byOperator: {
-        Terekea: { today: 1, lastScan: '2026-09-15T16:00:00.000Z' },
-        ' SARAH ': { today: 1, lastScan: '2026-09-15T16:00:00.000Z' },
-        Brenda: { today: 1, lastScan: '2026-09-15T16:00:00.000Z' }
-    }}; updateOperatorCards()`);
+        Terekea: { today: 1, lastScan: Date.now() },
+        ' SARAH ': { today: 1, lastScan: Date.now() },
+        Brenda: { today: 1, lastScan: Date.now() }
+    }, todayYmd: easternYmdToday() }; updateOperatorCards()`);
     assert.ok(!h.element('operatorCards').innerHTML.includes('Terekea'));
     assert.ok(!h.element('operatorCards').innerHTML.includes('SARAH'));
     assert.match(h.element('operatorCards').innerHTML, /Brenda/);

@@ -11,8 +11,7 @@ const stations = [{ name: 'MAIN', active: true }, { name: 'OP1', active: true }]
 function reset(options = {}) {
     controls = { outage: false, configDelayMs: 0, failLookup: false, ...options };
     requests = [];
-    const day = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-    const noon = Date.parse(`${day}T12:00:00-04:00`);
+    const noon = Date.now();
     records = Array.from({ length: options.count ?? 12 }, (_, i) => ({
         id: i + 1, created_at: new Date(noon - i * 1000).toISOString(),
         part_id: '100760E', serial_number: `FIXTURE${String(i).padStart(6, '0')}`,

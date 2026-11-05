@@ -27,9 +27,9 @@ test('dated and All Time results include every page; old serial remains searchab
     expect(rows).toHaveLength(6005);
     expect(rows.some(row => row['Serial Number'] === 'FIXTURE006004')).toBe(true);
 });
-test('activity cards stay on the 30-day summary when the table date range changes', async ({ page }) => {
+test('operator cards stay on today activity when the table date range changes', async ({ page }) => {
     await dashboard(page); await fullCount(page, 12);
-    await expect(page.locator('.operator-cards-header')).toContainText('Recent operator activity — last 30 days');
+    await expect(page.locator('.operator-cards-header')).toContainText('Recent operator activity — today');
     await expect(page.locator('#operatorCards')).toContainText('Usual:');
     await expect(page.locator('#operatorCards')).toContainText('Today: 12');
     await page.getByRole('button', { name: 'Yesterday', exact: true }).click();
